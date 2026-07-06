@@ -285,17 +285,29 @@ func (h *Handlers) GetClassmates(w http.ResponseWriter, r *http.Request) {
 	uid := h.getCurrentUser(r)
 	users := h.store.GetAllUsers()
 	items := make([]FriendItem, 0)
+	pendings := h.store.GetPendingReceived(uid)
+	sentPendings := h.store.GetPendingSent(uid)
+
 	for _, u := range users {
 		if u.ID == uid {
 			continue
 		}
 		status := h.store.GetFriendStatus(uid, u.ID)
 		var relID int
-		pendings := h.store.GetPendingReceived(uid)
+		// 收到的申请
 		for _, pr := range pendings {
 			if pr.FromID == u.ID {
 				relID = pr.ID
 				break
+			}
+		}
+		// 发出的申请（用于取消）
+		if relID == 0 {
+			for _, sp := range sentPendings {
+				if sp.ToID == u.ID {
+					relID = sp.ID
+					break
+				}
 			}
 		}
 		items = append(items, FriendItem{
@@ -334,6 +346,71 @@ func (h *Handlers) AcceptFriendRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"success": ok})
 }
 
+// CancelFriendRequest 取消已发送的好友申请
+func (h *Handlers) CancelFriendRequest(w http.ResponseWriter, r *http.Request) {
+	uid := h.getCurrentUser(r)
+	var req struct {
+		ToID int `json:"to_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request", 400)
+		return
+	}
+	ok := h.store.CancelFriendRequest(uid, req.ToID)
+	writeJSON(w, map[string]bool{"success": ok})
+}
+
+// RejectFriendRequest 拒绝收到的好友申请
+func (h *Handlers) RejectFriendRequest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RelationID int `json:"relation_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request", 400)
+		return
+	}
+	ok := h.store.RejectFriendRequest(req.RelationID)
+	writeJSON(w, map[string]bool{"success": ok})
+}
+
+// Unfriend 解除好友关系
+func (h *Handlers) Unfriend(w http.ResponseWriter, r *http.Request) {
+	uid := h.getCurrentUser(r)
+	var req struct {
+		FriendID int `json:"friend_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request", 400)
+		return
+	}
+	ok := h.store.Unfriend(uid, req.FriendID)
+	writeJSON(w, map[string]bool{"success": ok})
+}
+
+// UpdatePostVisibility 修改动态可见范围
+func (h *Handlers) UpdatePostVisibility(w http.ResponseWriter, r *http.Request) {
+	uid := h.getCurrentUser(r)
+	var req struct {
+		PostID     int    `json:"post_id"`
+		Visibility string `json:"visibility"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request", 400)
+		return
+	}
+	vis := models.Visibility(req.Visibility)
+	if vis != models.VisibilityPublic && vis != models.VisibilityFriends && vis != models.VisibilitySelfOnly {
+		writeError(w, "invalid visibility", 400)
+		return
+	}
+	ok := h.store.UpdatePostVisibility(req.PostID, uid, vis)
+	if !ok {
+		writeError(w, "无法修改，仅作者可修改可见范围", 403)
+		return
+	}
+	writeJSON(w, map[string]bool{"success": true})
+}
+
 // ===== 统计 =====
 
 // GetStats 获取统计信息
@@ -353,10 +430,14 @@ func (h *Handlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/feed", h.GetFeed)
 	mux.HandleFunc("/api/posts/detail", h.GetPostDetail)
 	mux.HandleFunc("/api/posts/create", h.CreatePost)
+	mux.HandleFunc("/api/posts/visibility", h.UpdatePostVisibility)
 	mux.HandleFunc("/api/comments/create", h.CreateComment)
 	mux.HandleFunc("/api/likes/toggle", h.ToggleLike)
 	mux.HandleFunc("/api/classmates", h.GetClassmates)
 	mux.HandleFunc("/api/friends/send", h.SendFriendRequest)
 	mux.HandleFunc("/api/friends/accept", h.AcceptFriendRequest)
+	mux.HandleFunc("/api/friends/cancel", h.CancelFriendRequest)
+	mux.HandleFunc("/api/friends/reject", h.RejectFriendRequest)
+	mux.HandleFunc("/api/friends/unfriend", h.Unfriend)
 	mux.HandleFunc("/api/stats", h.GetStats)
 }

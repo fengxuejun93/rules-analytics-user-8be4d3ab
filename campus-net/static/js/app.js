@@ -1,7 +1,6 @@
 // 校内网社交原型 - 前端逻辑
 const API = '';
 let currentUID = 1;
-// 本地缓存 feed 数据，方便详情操作后同步更新卡片
 let feedCache = [];
 
 // ===== 工具函数 =====
@@ -21,22 +20,47 @@ function formatTime(t) {
 
 async function apiFetch(path, opts) {
   const res = await fetch(apiUrl(path), opts);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok && data.error) {
+    throw new Error(data.error);
+  }
+  return data;
 }
 
 function escHtml(s) {
+  if (s == null) return '';
   const div = document.createElement('div');
-  div.textContent = s;
+  div.textContent = String(s);
   return div.innerHTML;
+}
+
+// 页面级错误提示
+function showPageError(msg, retryFn) {
+  let el = document.getElementById('pageError');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pageError';
+    el.className = 'page-error';
+    document.querySelector('.top-bar').after(el);
+  }
+  el.innerHTML = escHtml(msg) + (retryFn ? ' <button class="btn-small btn-add" onclick="this.parentElement.style.display=\'none\';(' + retryFn.toString() + ')()">重试</button>' : '');
+  el.style.display = '';
+}
+
+function hidePageError() {
+  const el = document.getElementById('pageError');
+  if (el) el.style.display = 'none';
 }
 
 // ===== 初始化 =====
 async function init() {
+  hidePageError();
   try {
     await loadUsers();
     await refresh();
   } catch (e) {
     console.error('init error:', e);
+    showPageError('页面初始化失败：' + e.message, init);
   }
   document.getElementById('userSelect').addEventListener('change', onUserChange);
 }
@@ -61,9 +85,10 @@ function onUserChange(e) {
 }
 
 async function refresh() {
-  loadFeed();
-  loadClassmates();
-  loadStats();
+  Promise.all([loadFeed(), loadClassmates(), loadStats()]).catch(e => {
+    console.error('refresh error:', e);
+    showPageError('数据刷新失败：' + e.message, refresh);
+  });
 }
 
 // ===== 动态列表 =====
@@ -80,8 +105,8 @@ async function loadFeed() {
     feedCache = items;
     list.innerHTML = items.map(renderFeedCard).join('');
   } catch (e) {
-    console.error('loadFeed error:', e);
-    list.innerHTML = '<p class="loading">加载失败，请刷新重试</p>';
+    list.innerHTML = '<div class="load-error"><p>加载动态失败：' + escHtml(e.message) + '</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
+    feedCache = [];
   }
 }
 
@@ -112,18 +137,13 @@ function renderFeedCard(item) {
 // ===== 点赞 =====
 async function toggleLike(postID) {
   try {
-    const res = await fetch(apiUrl('/api/likes/toggle'), {
+    const data = await apiFetch('/api/likes/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ post_id: postID })
     });
-    const data = await res.json();
-    if (data.error) return;
-    // 更新列表卡片上的点赞
     updateCardLike(postID, data.liked, data.like_count);
-    // 如果详情弹窗打开且是同一动态，也更新
     updateDetailLike(postID, data.liked, data.like_count);
-    // 同步 feedCache
     for (const item of feedCache) {
       if (item.post.id === postID) {
         item.is_liked = data.liked;
@@ -132,27 +152,23 @@ async function toggleLike(postID) {
       }
     }
   } catch (e) {
-    console.error('toggleLike error:', e);
+    showPageError('点赞失败：' + e.message);
   }
 }
 
 function updateCardLike(postID, liked, likeCount) {
-  const el = document.getElementById('likeCount_' + postID);
-  if (el) el.textContent = likeCount;
   const card = document.getElementById('feedCard_' + postID);
-  if (card) {
-    const btn = card.querySelector('.like-btn');
-    if (btn) {
-      btn.className = liked ? 'like-btn liked' : 'like-btn';
-      btn.innerHTML = (liked ? '♥' : '♡') + ' <span id="likeCount_' + postID + '">' + likeCount + '</span>';
-    }
+  if (!card) return;
+  const btn = card.querySelector('.like-btn');
+  if (btn) {
+    btn.className = liked ? 'like-btn liked' : 'like-btn';
+    btn.innerHTML = (liked ? '♥' : '♡') + ' <span id="likeCount_' + postID + '">' + likeCount + '</span>';
   }
 }
 
 function updateDetailLike(postID, liked, likeCount) {
   const el = document.getElementById('detailLikeCount');
   if (!el) return;
-  // 检查详情弹窗是否是同一个动态
   const detailPostId = document.getElementById('detailPostId');
   if (!detailPostId || parseInt(detailPostId.value) !== postID) return;
   el.textContent = likeCount;
@@ -169,17 +185,19 @@ async function createPost() {
   if (!content) { alert('请输入内容'); return; }
   const photo = document.getElementById('publishPhoto').value.trim();
   const visibility = document.getElementById('publishVisibility').value;
-
-  await fetch(apiUrl('/api/posts/create'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, photo_url: photo, visibility })
-  });
-
-  document.getElementById('publishContent').value = '';
-  document.getElementById('publishPhoto').value = '';
-  document.getElementById('publishVisibility').value = 'public';
-  refresh();
+  try {
+    await apiFetch('/api/posts/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, photo_url: photo, visibility })
+    });
+    document.getElementById('publishContent').value = '';
+    document.getElementById('publishPhoto').value = '';
+    document.getElementById('publishVisibility').value = 'public';
+    refresh();
+  } catch (e) {
+    showPageError('发布失败：' + e.message);
+  }
 }
 
 // ===== 动态详情 =====
@@ -187,20 +205,25 @@ let currentDetailPostID = null;
 
 async function openDetail(postID) {
   currentDetailPostID = postID;
-  const data = await apiFetch('/api/posts/detail?id=' + postID);
-
-  if (data.error) {
-    const body = document.getElementById('detailBody');
-    body.innerHTML = `
-      <div class="detail-error">
-        <p class="error-msg">${escHtml(data.error)}</p>
-        <button class="feed-action-btn" onclick="closeDetail()">返回动态列表</button>
-      </div>`;
-    document.getElementById('detailModal').style.display = '';
-    return;
+  try {
+    const data = await apiFetch('/api/posts/detail?id=' + postID);
+    if (data.error) {
+      renderDetailError(data.error);
+      return;
+    }
+    renderDetail(data);
+  } catch (e) {
+    renderDetailError(e.message);
   }
+  document.getElementById('detailModal').style.display = '';
+}
 
-  renderDetail(data);
+function renderDetailError(msg) {
+  document.getElementById('detailBody').innerHTML = `
+    <div class="detail-error">
+      <p class="error-msg">${escHtml(msg)}</p>
+      <button class="feed-action-btn" onclick="closeDetail()">返回动态列表</button>
+    </div>`;
   document.getElementById('detailModal').style.display = '';
 }
 
@@ -208,8 +231,19 @@ function renderDetail(data) {
   const p = data.post;
   const likeIcon = data.is_liked ? '♥' : '♡';
   const likeCls = data.is_liked ? 'like-btn liked' : 'like-btn';
-  const body = document.getElementById('detailBody');
-  body.innerHTML = `
+  const isOwner = p.author_id === currentUID;
+  // 可见性选择器（仅作者可见）
+  const visSelector = isOwner ? `
+    <div class="detail-vis-row">
+      <span>可见范围：</span>
+      <select id="detailVisSelect" onchange="changeVisibility(${p.id})">
+        <option value="public" ${p.visibility === 'public' ? 'selected' : ''}>公开</option>
+        <option value="friends" ${p.visibility === 'friends' ? 'selected' : ''}>仅好友</option>
+        <option value="self" ${p.visibility === 'self' ? 'selected' : ''}>仅自己</option>
+      </select>
+    </div>` : '';
+
+  document.getElementById('detailBody').innerHTML = `
     <input type="hidden" id="detailPostId" value="${p.id}">
     <div class="detail-author-row">
       <img class="detail-avatar" src="${data.author.avatar_url}" alt="${escHtml(data.author.name)}">
@@ -219,6 +253,7 @@ function renderDetail(data) {
         <span class="feed-visibility">${escHtml(data.visibility_label)}</span>
       </div>
     </div>
+    ${visSelector}
     <div class="detail-content">${escHtml(p.content)}</div>
     <img class="detail-photo" src="${p.photo_url}" alt="照片">
     <div class="detail-actions">
@@ -231,6 +266,31 @@ function renderDetail(data) {
       <input type="text" id="newCommentInput" placeholder="写评论..." onkeydown="if(event.key==='Enter')submitComment(${p.id})">
       <button onclick="submitComment(${p.id})">发表</button>
     </div>`;
+}
+
+// ===== 修改可见范围 =====
+async function changeVisibility(postID) {
+  const sel = document.getElementById('detailVisSelect');
+  if (!sel) return;
+  const visibility = sel.value;
+  try {
+    await apiFetch('/api/posts/visibility', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ post_id: postID, visibility })
+    });
+    // 更新详情里的可见范围标签
+    const visLabel = { public: '公开', friends: '仅好友', self: '仅自己' }[visibility] || visibility;
+    const labelEl = document.querySelector('.detail-author-row .feed-visibility');
+    if (labelEl) labelEl.textContent = visLabel;
+    // 刷新列表和统计（可见范围变化可能影响列表和可见动态数）
+    loadFeed();
+    loadStats();
+  } catch (e) {
+    showPageError('修改可见范围失败：' + e.message);
+    // 回退选择器
+    openDetail(postID);
+  }
 }
 
 function renderComments(comments) {
@@ -283,114 +343,179 @@ async function submitComment(postID) {
   const input = document.getElementById('newCommentInput');
   const content = input.value.trim();
   if (!content) return;
-  await fetch(apiUrl('/api/comments/create?post_id=' + postID), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content })
-  });
-  // 重新加载详情
-  await openDetail(postID);
-  // 更新列表卡片的评论数
-  updateCardCommentCount(postID);
-  loadStats();
+  try {
+    await apiFetch('/api/comments/create?post_id=' + postID, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    await openDetail(postID);
+    updateCardCommentCount(postID);
+    loadStats();
+  } catch (e) {
+    showPageError('评论失败：' + e.message);
+  }
 }
 
 async function submitReply(postID, parentID) {
   const input = document.getElementById('replyInput_' + parentID);
   const content = input.value.trim();
   if (!content) return;
-  await fetch(apiUrl('/api/comments/create?post_id=' + postID), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, parent_id: parentID })
-  });
-  await openDetail(postID);
-  updateCardCommentCount(postID);
-  loadStats();
+  try {
+    await apiFetch('/api/comments/create?post_id=' + postID, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, parent_id: parentID })
+    });
+    await openDetail(postID);
+    updateCardCommentCount(postID);
+    loadStats();
+  } catch (e) {
+    showPageError('回复失败：' + e.message);
+  }
 }
 
 async function updateCardCommentCount(postID) {
-  // 从详情API拿最新评论数更新列表卡片
   try {
     const data = await apiFetch('/api/posts/detail?id=' + postID);
     if (!data.error) {
       const el = document.getElementById('commentCount_' + postID);
       if (el) el.textContent = data.comment_count;
     }
-  } catch (e) {}
+  } catch (e) { /* ignore */ }
 }
 
 function closeDetail() {
   document.getElementById('detailModal').style.display = 'none';
   currentDetailPostID = null;
-  // 关闭详情时刷新列表（确保数字同步）
   loadFeed();
   loadStats();
 }
 
-// ===== 同学/好友 =====
+// ===== 同学/好友（完整状态流转） =====
 async function loadClassmates() {
-  const items = await apiFetch('/api/classmates');
-  const container = document.getElementById('classmatesList');
-  if (!items || items.length === 0) {
-    container.innerHTML = '<p style="color:#999;font-size:13px;">暂无同学</p>';
-    return;
-  }
-  container.innerHTML = items.map(c => {
-    let statusHtml = '';
-    const s = c.friend_status;
-    if (s === 'accepted') {
-      statusHtml = `<span class="classmate-status">已是好友</span><button class="btn-small btn-friend" disabled>好友</button>`;
-    } else if (s === 'pending') {
-      statusHtml = `<span class="classmate-status">已申请</span><button class="btn-small btn-pending" disabled>待确认</button>`;
-    } else if (s === 'pending_received') {
-      statusHtml = `<span class="classmate-status">申请你</span><button class="btn-small btn-accept" onclick="acceptFriend(${c.relation_id}, ${c.user.id})">接受</button>`;
-    } else {
-      statusHtml = `<span class="classmate-status">可添加</span><button class="btn-small btn-add" onclick="addFriend(${c.user.id})">添加</button>`;
+  try {
+    const items = await apiFetch('/api/classmates');
+    const container = document.getElementById('classmatesList');
+    if (!items || items.length === 0) {
+      container.innerHTML = '<p style="color:#999;font-size:13px;">暂无同学</p>';
+      return;
     }
-    return `
-      <div class="classmate-item">
-        <img class="classmate-avatar" src="${c.user.avatar_url}" alt="${escHtml(c.user.name)}">
-        <div class="classmate-info">
-          <div class="classmate-name">${escHtml(c.user.name)}</div>
-        </div>
-        ${statusHtml}
-      </div>`;
-  }).join('');
+    container.innerHTML = items.map(c => {
+      const s = c.friend_status;
+      const uid = c.user.id;
+      const relId = c.relation_id;
+      let statusHtml = '';
+      if (s === 'accepted') {
+        // 已是好友 → 可解除
+        statusHtml = `<span class="classmate-status">好友</span><button class="btn-small btn-unfriend" onclick="unfriend(${uid})">解除</button>`;
+      } else if (s === 'pending') {
+        // 已发出待确认 → 可取消
+        statusHtml = `<span class="classmate-status">待确认</span><button class="btn-small btn-cancel" onclick="cancelFriend(${uid})">取消</button>`;
+      } else if (s === 'pending_received') {
+        // 收到申请 → 可接受/拒绝
+        statusHtml = `<span class="classmate-status">申请你</span><button class="btn-small btn-accept" onclick="acceptFriend(${relId})">接受</button><button class="btn-small btn-reject" onclick="rejectFriend(${relId})">拒绝</button>`;
+      } else {
+        // 陌生人 → 可添加
+        statusHtml = `<span class="classmate-status">陌生人</span><button class="btn-small btn-add" onclick="addFriend(${uid})">添加</button>`;
+      }
+      return `
+        <div class="classmate-item">
+          <img class="classmate-avatar" src="${c.user.avatar_url}" alt="${escHtml(c.user.name)}">
+          <div class="classmate-info">
+            <div class="classmate-name">${escHtml(c.user.name)}</div>
+          </div>
+          ${statusHtml}
+        </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('classmatesList').innerHTML = '<p style="color:#e74c3c;font-size:13px;">加载失败</p>';
+  }
 }
 
 async function addFriend(toID) {
-  await fetch(apiUrl('/api/friends/send'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_id: toID })
-  });
-  refresh();
+  try {
+    await apiFetch('/api/friends/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_id: toID })
+    });
+    refresh();
+  } catch (e) {
+    showPageError('发送申请失败：' + e.message);
+  }
 }
 
-async function acceptFriend(relationID, fromUserID) {
-  await fetch(apiUrl('/api/friends/accept'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ relation_id: relationID })
-  });
-  refresh();
+async function cancelFriend(toID) {
+  try {
+    await apiFetch('/api/friends/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_id: toID })
+    });
+    refresh();
+  } catch (e) {
+    showPageError('取消申请失败：' + e.message);
+  }
+}
+
+async function acceptFriend(relationID) {
+  try {
+    await apiFetch('/api/friends/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relation_id: relationID })
+    });
+    refresh();
+  } catch (e) {
+    showPageError('接受申请失败：' + e.message);
+  }
+}
+
+async function rejectFriend(relationID) {
+  try {
+    await apiFetch('/api/friends/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relation_id: relationID })
+    });
+    refresh();
+  } catch (e) {
+    showPageError('拒绝申请失败：' + e.message);
+  }
+}
+
+async function unfriend(friendID) {
+  if (!confirm('确定解除好友关系？')) return;
+  try {
+    await apiFetch('/api/friends/unfriend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friend_id: friendID })
+    });
+    refresh();
+  } catch (e) {
+    showPageError('解除好友失败：' + e.message);
+  }
 }
 
 // ===== 统计 =====
 async function loadStats() {
-  const stats = await apiFetch('/api/stats');
-  document.getElementById('statPostCount').textContent = stats.post_count;
-  document.getElementById('statFriendCount').textContent = stats.friend_count;
-  document.getElementById('statPendingCount').textContent = stats.pending_count;
-  document.getElementById('statVisibleCount').textContent = stats.visible_post_count;
+  try {
+    const stats = await apiFetch('/api/stats');
+    document.getElementById('statPostCount').textContent = stats.post_count;
+    document.getElementById('statFriendCount').textContent = stats.friend_count;
+    document.getElementById('statPendingCount').textContent = stats.pending_count;
+    document.getElementById('statVisibleCount').textContent = stats.visible_post_count;
+  } catch (e) {
+    // 统计区保持上次数据即可，不打断用户
+    console.error('loadStats error:', e);
+  }
 }
 
-// 点击弹窗遮罩关闭详情
+// 点击遮罩关闭详情
 document.addEventListener('click', function(e) {
-  if (e.target.id === 'detailModal') {
-    closeDetail();
-  }
+  if (e.target.id === 'detailModal') closeDetail();
 });
 
 // 启动

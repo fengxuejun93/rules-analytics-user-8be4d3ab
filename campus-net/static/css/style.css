@@ -99,7 +99,8 @@ body {
 }
 .classmate-info { flex: 1; }
 .classmate-name { font-size: 14px; font-weight: 500; }
-.classmate-status { font-size: 12px; color: #999; }
+.classmate-status { font-size: 12px; color: #999; display: block; margin-bottom: 2px; }
+.classmate-item .btn-small + .btn-small { margin-left: 4px; }
 .btn-small {
   padding: 3px 10px;
   border: none;
@@ -110,10 +111,14 @@ body {
 }
 .btn-add { background: #225fba; color: #fff; }
 .btn-add:hover { background: #1a4f9e; }
-.btn-pending { background: #f0ad4e; color: #fff; cursor: default; }
 .btn-accept { background: #5cb85c; color: #fff; }
 .btn-accept:hover { background: #449d44; }
-.btn-friend { background: #ddd; color: #666; cursor: default; }
+.btn-reject { background: #e74c3c; color: #fff; }
+.btn-reject:hover { background: #c0392b; }
+.btn-cancel { background: #f0ad4e; color: #fff; }
+.btn-cancel:hover { background: #ec971f; }
+.btn-unfriend { background: #bbb; color: #555; }
+.btn-unfriend:hover { background: #e74c3c; color: #fff; }
 
 /* 发布面板 */
 .publish-panel textarea,
@@ -362,7 +367,40 @@ body {
 
 .loading { color: #999; text-align: center; padding: 30px; }
 
+/* 页面级错误提示 */
+.page-error {
+  background: #fef0f0;
+  color: #e74c3c;
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 14px;
+  border-bottom: 1px solid #fdd;
+}
+.page-error .btn-small { margin-left: 10px; }
+
+/* 加载失败区 */
+.load-error { text-align: center; padding: 30px; color: #e74c3c; }
+.load-error .btn-small { margin-top: 10px; }
+
 /* 详情错误提示 */
 .detail-error { text-align: center; padding: 40px 20px; }
 .error-msg { font-size: 16px; color: #e74c3c; margin-bottom: 16px; }
 .replies-list { margin-top: 6px; }
+
+/* 详情可见范围选择器 */
+.detail-vis-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #f4f7fc;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.detail-vis-row select {
+  padding: 4px 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  font-size: 13px;
+}

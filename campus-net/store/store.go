@@ -408,3 +408,76 @@ func (s *Store) IsLikedByUser(userID, postID int) bool {
 	}
 	return false
 }
+
+// ===== 好友状态流转 =====
+
+// CancelFriendRequest 取消已发送的好友申请
+func (s *Store) CancelFriendRequest(fromID, toID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.friendRelations {
+		if r.FromID == fromID && r.ToID == toID && r.Status == models.FriendStatusPending {
+			s.friendRelations = append(s.friendRelations[:i], s.friendRelations[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// RejectFriendRequest 拒绝收到的好友申请
+func (s *Store) RejectFriendRequest(relationID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.friendRelations {
+		if r.ID == relationID && r.Status == models.FriendStatusPending {
+			s.friendRelations = append(s.friendRelations[:i], s.friendRelations[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Unfriend 解除好友关系
+func (s *Store) Unfriend(uid1, uid2 int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for i := len(s.friendRelations) - 1; i >= 0; i-- {
+		r := s.friendRelations[i]
+		if r.Status == models.FriendStatusAccepted {
+			if (r.FromID == uid1 && r.ToID == uid2) || (r.FromID == uid2 && r.ToID == uid1) {
+				s.friendRelations = append(s.friendRelations[:i], s.friendRelations[i+1:]...)
+				removed++
+			}
+		}
+	}
+	return removed > 0
+}
+
+// ===== 动态可见性修改 =====
+
+// UpdatePostVisibility 修改动态可见范围（仅作者可改）
+func (s *Store) UpdatePostVisibility(postID, authorID int, visibility models.Visibility) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.posts {
+		if s.posts[i].ID == postID && s.posts[i].AuthorID == authorID {
+			s.posts[i].Visibility = visibility
+			return true
+		}
+	}
+	return false
+}
+
+// GetPendingSent 获取已发出待确认的申请
+func (s *Store) GetPendingSent(userID int) []models.FriendRelation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.FriendRelation
+	for _, r := range s.friendRelations {
+		if r.FromID == userID && r.Status == models.FriendStatusPending {
+			result = append(result, r)
+		}
+	}
+	return result
+}
