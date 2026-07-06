@@ -10,15 +10,17 @@ import (
 
 // Store 内存数据存储
 type Store struct {
-	mu       sync.RWMutex
-	users    []models.User
-	posts    []models.Post
-	comments []models.Comment
+	mu              sync.RWMutex
+	users           []models.User
+	posts           []models.Post
+	comments        []models.Comment
 	friendRelations []models.FriendRelation
-	nextUserID    int
-	nextPostID    int
-	nextCommentID int
-	nextFriendID  int
+	likes           []models.Like
+	nextUserID      int
+	nextPostID      int
+	nextCommentID   int
+	nextFriendID    int
+	nextLikeID      int
 }
 
 // NewStore 创建存储并初始化种子数据
@@ -28,6 +30,7 @@ func NewStore() *Store {
 		nextPostID:    1,
 		nextCommentID: 1,
 		nextFriendID:  1,
+		nextLikeID:    1,
 	}
 	s.seed()
 	return s
@@ -73,6 +76,15 @@ func (s *Store) seed() {
 	}
 	s.comments = comments
 	s.nextCommentID = 4
+
+	// 种子点赞
+	likes := []models.Like{
+		{ID: 1, UserID: 1, PostID: 2, CreatedAt: now.Add(-50 * time.Minute)},
+		{ID: 2, UserID: 2, PostID: 1, CreatedAt: now.Add(-85 * time.Minute)},
+		{ID: 3, UserID: 1, PostID: 4, CreatedAt: now.Add(-10 * time.Minute)},
+	}
+	s.likes = likes
+	s.nextLikeID = 4
 }
 
 func intPtr(i int) *int { return &i }
@@ -344,4 +356,55 @@ func (s *Store) CreateComment(postID, authorID int, content string, parentID *in
 	s.nextCommentID++
 	s.comments = append(s.comments, c)
 	return c
+}
+
+// ===== 点赞 =====
+
+func (s *Store) ToggleLike(userID, postID int) (liked bool, likeCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 查找是否已点赞
+	for i, l := range s.likes {
+		if l.UserID == userID && l.PostID == postID {
+			// 取消点赞
+			s.likes = append(s.likes[:i], s.likes[i+1:]...)
+			return false, s.countLikesByPostUnlocked(postID)
+		}
+	}
+	// 新增点赞
+	s.likes = append(s.likes, models.Like{
+		ID:        s.nextLikeID,
+		UserID:    userID,
+		PostID:    postID,
+		CreatedAt: time.Now(),
+	})
+	s.nextLikeID++
+	return true, s.countLikesByPostUnlocked(postID)
+}
+
+func (s *Store) countLikesByPostUnlocked(postID int) int {
+	count := 0
+	for _, l := range s.likes {
+		if l.PostID == postID {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Store) CountLikesByPost(postID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.countLikesByPostUnlocked(postID)
+}
+
+func (s *Store) IsLikedByUser(userID, postID int) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, l := range s.likes {
+		if l.UserID == userID && l.PostID == postID {
+			return true
+		}
+	}
+	return false
 }

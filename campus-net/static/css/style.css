@@ -196,6 +196,7 @@ body {
   gap: 16px;
   font-size: 13px;
   color: #666;
+  align-items: center;
 }
 .feed-action-btn {
   background: none;
@@ -207,6 +208,24 @@ body {
 }
 .feed-action-btn:hover { text-decoration: underline; }
 .feed-comment-count { color: #888; }
+
+/* 点赞按钮 */
+.like-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 16px;
+  padding: 3px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #888;
+  transition: .2s;
+}
+.like-btn:hover { border-color: #225fba; color: #225fba; }
+.like-btn.liked {
+  color: #e74c3c;
+  border-color: #e74c3c;
+  background: #fef0f0;
+}
 
 /* 弹窗 */
 .modal-overlay {
@@ -258,6 +277,16 @@ body {
   border: 2px solid #ddd;
 }
 .detail-content { font-size: 15px; line-height: 1.6; margin-bottom: 16px; }
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 16px;
+  padding: 8px 0;
+  border-top: 1px solid #f0f0f0;
+  border-bottom: 1px solid #f0f0f0;
+}
+.detail-comment-info { color: #888; font-size: 14px; }
 .detail-section-title {
   font-size: 14px;
   font-weight: bold;
@@ -332,3 +361,8 @@ body {
 }
 
 .loading { color: #999; text-align: center; padding: 30px; }
+
+/* 详情错误提示 */
+.detail-error { text-align: center; padding: 40px 20px; }
+.error-msg { font-size: 16px; color: #e74c3c; margin-bottom: 16px; }
+.replies-list { margin-top: 6px; }

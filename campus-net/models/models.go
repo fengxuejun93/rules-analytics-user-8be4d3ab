@@ -55,6 +55,14 @@ type Comment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Like 点赞
+type Like struct {
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	PostID    int       `json:"post_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Stats 统计信息
 type Stats struct {
 	PostCount       int `json:"post_count"`

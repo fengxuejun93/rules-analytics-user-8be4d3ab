@@ -34,14 +34,22 @@ func (h *Handlers) getCurrentUser(r *http.Request) int {
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(data)
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// ===== 用户列表 =====
+
+// GetUsers 获取所有用户（供前端选择身份）
+func (h *Handlers) GetUsers(w http.ResponseWriter, r *http.Request) {
+	users := h.store.GetAllUsers()
+	writeJSON(w, users)
 }
 
 // ===== 动态 Feed =====
@@ -51,6 +59,8 @@ type FeedItem struct {
 	Post            models.Post `json:"post"`
 	Author          models.User `json:"author"`
 	CommentCount    int         `json:"comment_count"`
+	LikeCount       int         `json:"like_count"`
+	IsLiked         bool        `json:"is_liked"`
 	VisibilityLabel string      `json:"visibility_label"`
 }
 
@@ -68,6 +78,8 @@ func (h *Handlers) GetFeed(w http.ResponseWriter, r *http.Request) {
 			Post:            p,
 			Author:          *author,
 			CommentCount:    h.store.CountCommentsByPost(p.ID),
+			LikeCount:       h.store.CountLikesByPost(p.ID),
+			IsLiked:         h.store.IsLikedByUser(uid, p.ID),
 			VisibilityLabel: visibilityLabel(p.Visibility),
 		})
 	}
@@ -94,6 +106,9 @@ type PostDetail struct {
 	Post            models.Post   `json:"post"`
 	Author          models.User   `json:"author"`
 	Comments        []CommentItem `json:"comments"`
+	LikeCount       int           `json:"like_count"`
+	IsLiked         bool          `json:"is_liked"`
+	CommentCount    int           `json:"comment_count"`
 	VisibilityLabel string        `json:"visibility_label"`
 }
 
@@ -115,13 +130,13 @@ func (h *Handlers) GetPostDetail(w http.ResponseWriter, r *http.Request) {
 	uid := h.getCurrentUser(r)
 	post := h.store.GetPost(postID)
 	if post == nil {
-		writeError(w, "post not found", 404)
+		writeError(w, "动态不存在", 404)
 		return
 	}
 
 	// 可见性检查
 	if !isViewable(*post, uid, h.store) {
-		writeError(w, "no permission", 403)
+		writeError(w, "你没有权限查看此动态", 403)
 		return
 	}
 
@@ -133,6 +148,9 @@ func (h *Handlers) GetPostDetail(w http.ResponseWriter, r *http.Request) {
 		Post:            *post,
 		Author:          *author,
 		Comments:        commentItems,
+		LikeCount:       h.store.CountLikesByPost(postID),
+		IsLiked:         h.store.IsLikedByUser(uid, postID),
+		CommentCount:    h.store.CountCommentsByPost(postID),
 		VisibilityLabel: visibilityLabel(post.Visibility),
 	})
 }
@@ -234,6 +252,25 @@ func (h *Handlers) CreateComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, comment)
 }
 
+// ===== 点赞 =====
+
+// ToggleLike 切换点赞状态
+func (h *Handlers) ToggleLike(w http.ResponseWriter, r *http.Request) {
+	uid := h.getCurrentUser(r)
+	var req struct {
+		PostID int `json:"post_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request", 400)
+		return
+	}
+	liked, likeCount := h.store.ToggleLike(uid, req.PostID)
+	writeJSON(w, map[string]interface{}{
+		"liked":      liked,
+		"like_count": likeCount,
+	})
+}
+
 // ===== 好友 =====
 
 // FriendItem 好友列表项
@@ -312,10 +349,12 @@ func (h *Handlers) GetStats(w http.ResponseWriter, r *http.Request) {
 
 // RegisterRoutes 注册路由
 func (h *Handlers) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/users", h.GetUsers)
 	mux.HandleFunc("/api/feed", h.GetFeed)
 	mux.HandleFunc("/api/posts/detail", h.GetPostDetail)
 	mux.HandleFunc("/api/posts/create", h.CreatePost)
 	mux.HandleFunc("/api/comments/create", h.CreateComment)
+	mux.HandleFunc("/api/likes/toggle", h.ToggleLike)
 	mux.HandleFunc("/api/classmates", h.GetClassmates)
 	mux.HandleFunc("/api/friends/send", h.SendFriendRequest)
 	mux.HandleFunc("/api/friends/accept", h.AcceptFriendRequest)
