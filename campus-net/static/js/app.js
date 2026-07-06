@@ -19,10 +19,20 @@ function formatTime(t) {
 }
 
 async function apiFetch(path, opts) {
-  const res = await fetch(apiUrl(path), opts);
-  const data = await res.json();
-  if (!res.ok && data.error) {
-    throw new Error(data.error);
+  let res;
+  try {
+    res = await fetch(apiUrl(path), opts);
+  } catch (e) {
+    throw new Error('网络请求失败，请检查服务是否启动');
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('服务器返回了非JSON数据 (HTTP ' + res.status + ')');
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) ? data.error : '请求失败 (HTTP ' + res.status + ')');
   }
   return data;
 }
@@ -41,9 +51,17 @@ function showPageError(msg, retryFn) {
     el = document.createElement('div');
     el.id = 'pageError';
     el.className = 'page-error';
-    document.querySelector('.top-bar').after(el);
+    const topBar = document.querySelector('.top-bar');
+    if (topBar) topBar.after(el);
+    else document.body.prepend(el);
   }
-  el.innerHTML = escHtml(msg) + (retryFn ? ' <button class="btn-small btn-add" onclick="this.parentElement.style.display=\'none\';(' + retryFn.toString() + ')()">重试</button>' : '');
+  let retryBtn = '';
+  if (retryFn) {
+    const fnName = '__retry_' + Date.now();
+    window[fnName] = function() { el.style.display = 'none'; retryFn(); };
+    retryBtn = ' <button class="btn-small btn-add" onclick="' + fnName + '()">重试</button>';
+  }
+  el.innerHTML = escHtml(msg) + retryBtn;
   el.style.display = '';
 }
 
@@ -53,21 +71,51 @@ function hidePageError() {
 }
 
 // ===== 初始化 =====
+function boot() {
+  init();
+  // 超时兜底：8秒后如果 feedList 仍在"加载中"，显示重试
+  setTimeout(function() {
+    const list = document.getElementById('feedList');
+    if (list && list.querySelector('.loading')) {
+      list.innerHTML = '<div class="load-error"><p>加载超时，服务器可能未启动</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
+    }
+  }, 8000);
+}
+
 async function init() {
   hidePageError();
+  const list = document.getElementById('feedList');
+  if (list) list.innerHTML = '<p class="loading">加载中...</p>';
+
+  // 加载用户选择器（失败不阻塞后续）
   try {
     await loadUsers();
+  } catch (e) {
+    console.error('loadUsers error:', e);
+  }
+
+  // 加载核心数据
+  try {
     await refresh();
   } catch (e) {
-    console.error('init error:', e);
-    showPageError('页面初始化失败：' + e.message, init);
+    console.error('refresh error:', e);
+    showPageError('数据加载失败：' + e.message, init);
   }
-  document.getElementById('userSelect').addEventListener('change', onUserChange);
+
+  // 确保 feedList 不卡在"加载中"
+  if (list && list.querySelector('.loading')) {
+    list.innerHTML = '<div class="load-error"><p>动态加载异常</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
+  }
+
+  const sel = document.getElementById('userSelect');
+  if (sel) sel.addEventListener('change', onUserChange);
 }
 
 async function loadUsers() {
   const users = await apiFetch('/api/users');
+  if (!Array.isArray(users)) throw new Error('用户数据格式异常');
   const sel = document.getElementById('userSelect');
+  if (!sel) return;
   sel.innerHTML = '';
   users.forEach(u => {
     const opt = document.createElement('option');
@@ -85,25 +133,33 @@ function onUserChange(e) {
 }
 
 async function refresh() {
-  Promise.all([loadFeed(), loadClassmates(), loadStats()]).catch(e => {
-    console.error('refresh error:', e);
-    showPageError('数据刷新失败：' + e.message, refresh);
-  });
+  await Promise.allSettled([loadFeed(), loadClassmates(), loadStats()]);
 }
 
 // ===== 动态列表 =====
 async function loadFeed() {
   const list = document.getElementById('feedList');
+  if (!list) return;
   list.innerHTML = '<p class="loading">加载中...</p>';
   try {
     const items = await apiFetch('/api/feed');
-    if (!items || items.length === 0) {
-      list.innerHTML = '<p class="loading">暂无可见动态</p>';
+    if (!Array.isArray(items)) {
+      list.innerHTML = '<div class="load-error"><p>动态数据格式异常</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
+      feedCache = [];
+      return;
+    }
+    if (items.length === 0) {
+      list.innerHTML = '<div class="load-error"><p>暂无可见动态</p><button class="btn-small btn-add" onclick="loadFeed()">刷新</button></div>';
       feedCache = [];
       return;
     }
     feedCache = items;
-    list.innerHTML = items.map(renderFeedCard).join('');
+    try {
+      list.innerHTML = items.map(renderFeedCard).join('');
+    } catch (renderErr) {
+      console.error('renderFeedCard error:', renderErr);
+      list.innerHTML = '<div class="load-error"><p>渲染动态失败：' + escHtml(renderErr.message) + '</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
+    }
   } catch (e) {
     list.innerHTML = '<div class="load-error"><p>加载动态失败：' + escHtml(e.message) + '</p><button class="btn-small btn-add" onclick="loadFeed()">重试</button></div>';
     feedCache = [];
@@ -112,23 +168,24 @@ async function loadFeed() {
 
 function renderFeedCard(item) {
   const p = item.post;
+  const author = item.author || {};
   const likeIcon = item.is_liked ? '♥' : '♡';
   const likeCls = item.is_liked ? 'like-btn liked' : 'like-btn';
   return `
     <div class="feed-card" id="feedCard_${p.id}">
       <div class="feed-header">
-        <img class="feed-avatar" src="${item.author.avatar_url}" alt="${escHtml(item.author.name)}">
+        <img class="feed-avatar" src="${author.avatar_url || ''}" alt="${escHtml(author.name)}">
         <div>
-          <span class="feed-author">${escHtml(item.author.name)}</span>
+          <span class="feed-author">${escHtml(author.name)}</span>
           <span class="feed-time">${formatTime(p.created_at)}</span>
           <span class="feed-visibility">${escHtml(item.visibility_label)}</span>
         </div>
       </div>
       <div class="feed-content">${escHtml(p.content)}</div>
-      <img class="feed-photo" src="${p.photo_url}" alt="照片" onclick="openDetail(${p.id})">
+      <img class="feed-photo" src="${p.photo_url || ''}" alt="照片" onclick="openDetail(${p.id})">
       <div class="feed-actions">
-        <button class="${likeCls}" onclick="toggleLike(${p.id})">${likeIcon} <span id="likeCount_${p.id}">${item.like_count}</span></button>
-        <span class="feed-comment-count">💬 <span id="commentCount_${p.id}">${item.comment_count}</span> 条评论</span>
+        <button class="${likeCls}" onclick="toggleLike(${p.id})">${likeIcon} <span id="likeCount_${p.id}">${item.like_count || 0}</span></button>
+        <span class="feed-comment-count">💬 <span id="commentCount_${p.id}">${item.comment_count || 0}</span> 条评论</span>
         <button class="feed-action-btn" onclick="openDetail(${p.id})">查看详情</button>
       </div>
     </div>`;
@@ -207,10 +264,6 @@ async function openDetail(postID) {
   currentDetailPostID = postID;
   try {
     const data = await apiFetch('/api/posts/detail?id=' + postID);
-    if (data.error) {
-      renderDetailError(data.error);
-      return;
-    }
     renderDetail(data);
   } catch (e) {
     renderDetailError(e.message);
@@ -229,10 +282,10 @@ function renderDetailError(msg) {
 
 function renderDetail(data) {
   const p = data.post;
+  const author = data.author || {};
   const likeIcon = data.is_liked ? '♥' : '♡';
   const likeCls = data.is_liked ? 'like-btn liked' : 'like-btn';
   const isOwner = p.author_id === currentUID;
-  // 可见性选择器（仅作者可见）
   const visSelector = isOwner ? `
     <div class="detail-vis-row">
       <span>可见范围：</span>
@@ -243,25 +296,28 @@ function renderDetail(data) {
       </select>
     </div>` : '';
 
+  const commentCount = data.comment_count || 0;
+  const comments = Array.isArray(data.comments) ? data.comments : [];
+
   document.getElementById('detailBody').innerHTML = `
     <input type="hidden" id="detailPostId" value="${p.id}">
     <div class="detail-author-row">
-      <img class="detail-avatar" src="${data.author.avatar_url}" alt="${escHtml(data.author.name)}">
+      <img class="detail-avatar" src="${author.avatar_url || ''}" alt="${escHtml(author.name)}">
       <div>
-        <span class="feed-author">${escHtml(data.author.name)}</span>
+        <span class="feed-author">${escHtml(author.name)}</span>
         <span class="feed-time">${formatTime(p.created_at)}</span>
         <span class="feed-visibility">${escHtml(data.visibility_label)}</span>
       </div>
     </div>
     ${visSelector}
     <div class="detail-content">${escHtml(p.content)}</div>
-    <img class="detail-photo" src="${p.photo_url}" alt="照片">
+    <img class="detail-photo" src="${p.photo_url || ''}" alt="照片">
     <div class="detail-actions">
-      <button id="detailLikeBtn" class="${likeCls}" onclick="toggleLike(${p.id})">${likeIcon} <span id="detailLikeCount">${data.like_count}</span> 赞</button>
-      <span class="detail-comment-info">💬 ${data.comment_count} 条评论</span>
+      <button id="detailLikeBtn" class="${likeCls}" onclick="toggleLike(${p.id})">${likeIcon} <span id="detailLikeCount">${data.like_count || 0}</span> 赞</button>
+      <span class="detail-comment-info">💬 ${commentCount} 条评论</span>
     </div>
-    <div class="detail-section-title">评论 (${data.comments.length})</div>
-    <div id="commentsContainer">${renderComments(data.comments)}</div>
+    <div class="detail-section-title">评论 (${comments.length})</div>
+    <div id="commentsContainer">${renderComments(comments)}</div>
     <div class="comment-form">
       <input type="text" id="newCommentInput" placeholder="写评论..." onkeydown="if(event.key==='Enter')submitComment(${p.id})">
       <button onclick="submitComment(${p.id})">发表</button>
@@ -279,16 +335,14 @@ async function changeVisibility(postID) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ post_id: postID, visibility })
     });
-    // 更新详情里的可见范围标签
     const visLabel = { public: '公开', friends: '仅好友', self: '仅自己' }[visibility] || visibility;
     const labelEl = document.querySelector('.detail-author-row .feed-visibility');
     if (labelEl) labelEl.textContent = visLabel;
-    // 刷新列表和统计（可见范围变化可能影响列表和可见动态数）
+    // 刷新列表和统计（可见范围变化影响列表和可见动态数）
     loadFeed();
     loadStats();
   } catch (e) {
     showPageError('修改可见范围失败：' + e.message);
-    // 回退选择器
     openDetail(postID);
   }
 }
@@ -299,31 +353,37 @@ function renderComments(comments) {
 }
 
 function renderCommentItem(c) {
+  const ca = c.author || {};
+  const cm = c.comment || {};
   let html = `
     <div class="comment-item">
       <div class="comment-header">
-        <img class="comment-avatar" src="${c.author.avatar_url}" alt="${escHtml(c.author.name)}">
-        <span class="comment-author">${escHtml(c.author.name)}</span>
-        <span class="comment-time">${formatTime(c.comment.created_at)}</span>
+        <img class="comment-avatar" src="${ca.avatar_url || ''}" alt="${escHtml(ca.name)}">
+        <span class="comment-author">${escHtml(ca.name)}</span>
+        <span class="comment-time">${formatTime(cm.created_at)}</span>
       </div>
-      <div class="comment-body">${escHtml(c.comment.content)}</div>
-      <button class="comment-reply-btn" onclick="showReplyForm(${c.comment.id})">回复</button>
-      <div id="replyForm_${c.comment.id}" style="display:none;" class="reply-form">
+      <div class="comment-body">${escHtml(cm.content)}</div>
+      <button class="comment-reply-btn" onclick="showReplyForm(${cm.id})">回复</button>
+      <div id="replyForm_${cm.id}" style="display:none;" class="reply-form">
         <div class="comment-form">
-          <input type="text" id="replyInput_${c.comment.id}" placeholder="回复 ${escHtml(c.author.name)}..." onkeydown="if(event.key==='Enter')submitReply(${c.comment.post_id}, ${c.comment.id})">
-          <button onclick="submitReply(${c.comment.post_id}, ${c.comment.id})">回复</button>
+          <input type="text" id="replyInput_${cm.id}" placeholder="回复 ${escHtml(ca.name)}..." onkeydown="if(event.key==='Enter')submitReply(${cm.post_id}, ${cm.id})">
+          <button onclick="submitReply(${cm.post_id}, ${cm.id})">回复</button>
         </div>
       </div>`;
   if (c.replies && c.replies.length > 0) {
-    html += '<div class="replies-list">' + c.replies.map(r => `
+    html += '<div class="replies-list">' + c.replies.map(r => {
+      const ra = r.author || {};
+      const rm = r.comment || {};
+      return `
       <div class="reply-item">
         <div class="comment-header">
-          <img class="comment-avatar" src="${r.author.avatar_url}" alt="${escHtml(r.author.name)}">
-          <span class="comment-author">${escHtml(r.author.name)}</span>
-          <span class="comment-time">${formatTime(r.comment.created_at)}</span>
+          <img class="comment-avatar" src="${ra.avatar_url || ''}" alt="${escHtml(ra.name)}">
+          <span class="comment-author">${escHtml(ra.name)}</span>
+          <span class="comment-time">${formatTime(rm.created_at)}</span>
         </div>
-        <div class="comment-body">${escHtml(r.comment.content)}</div>
-      </div>`).join('') + '</div>';
+        <div class="comment-body">${escHtml(rm.content)}</div>
+      </div>`;
+    }).join('') + '</div>';
   }
   html += '</div>';
   return html;
@@ -378,7 +438,7 @@ async function submitReply(postID, parentID) {
 async function updateCardCommentCount(postID) {
   try {
     const data = await apiFetch('/api/posts/detail?id=' + postID);
-    if (!data.error) {
+    if (data && data.comment_count !== undefined) {
       const el = document.getElementById('commentCount_' + postID);
       if (el) el.textContent = data.comment_count;
     }
@@ -394,42 +454,40 @@ function closeDetail() {
 
 // ===== 同学/好友（完整状态流转） =====
 async function loadClassmates() {
+  const container = document.getElementById('classmatesList');
+  if (!container) return;
   try {
     const items = await apiFetch('/api/classmates');
-    const container = document.getElementById('classmatesList');
-    if (!items || items.length === 0) {
+    if (!Array.isArray(items) || items.length === 0) {
       container.innerHTML = '<p style="color:#999;font-size:13px;">暂无同学</p>';
       return;
     }
     container.innerHTML = items.map(c => {
+      const u = c.user || {};
       const s = c.friend_status;
-      const uid = c.user.id;
+      const cid = u.id;
       const relId = c.relation_id;
       let statusHtml = '';
       if (s === 'accepted') {
-        // 已是好友 → 可解除
-        statusHtml = `<span class="classmate-status">好友</span><button class="btn-small btn-unfriend" onclick="unfriend(${uid})">解除</button>`;
+        statusHtml = '<span class="classmate-status">好友</span><button class="btn-small btn-unfriend" onclick="unfriend(' + cid + ')">解除</button>';
       } else if (s === 'pending') {
-        // 已发出待确认 → 可取消
-        statusHtml = `<span class="classmate-status">待确认</span><button class="btn-small btn-cancel" onclick="cancelFriend(${uid})">取消</button>`;
+        statusHtml = '<span class="classmate-status">待确认</span><button class="btn-small btn-cancel" onclick="cancelFriend(' + cid + ')">取消</button>';
       } else if (s === 'pending_received') {
-        // 收到申请 → 可接受/拒绝
-        statusHtml = `<span class="classmate-status">申请你</span><button class="btn-small btn-accept" onclick="acceptFriend(${relId})">接受</button><button class="btn-small btn-reject" onclick="rejectFriend(${relId})">拒绝</button>`;
+        statusHtml = '<span class="classmate-status">申请你</span><button class="btn-small btn-accept" onclick="acceptFriend(' + relId + ')">接受</button><button class="btn-small btn-reject" onclick="rejectFriend(' + relId + ')">拒绝</button>';
       } else {
-        // 陌生人 → 可添加
-        statusHtml = `<span class="classmate-status">陌生人</span><button class="btn-small btn-add" onclick="addFriend(${uid})">添加</button>`;
+        statusHtml = '<span class="classmate-status">陌生人</span><button class="btn-small btn-add" onclick="addFriend(' + cid + ')">添加</button>';
       }
       return `
         <div class="classmate-item">
-          <img class="classmate-avatar" src="${c.user.avatar_url}" alt="${escHtml(c.user.name)}">
+          <img class="classmate-avatar" src="${u.avatar_url || ''}" alt="${escHtml(u.name)}">
           <div class="classmate-info">
-            <div class="classmate-name">${escHtml(c.user.name)}</div>
+            <div class="classmate-name">${escHtml(u.name)}</div>
           </div>
           ${statusHtml}
         </div>`;
     }).join('');
   } catch (e) {
-    document.getElementById('classmatesList').innerHTML = '<p style="color:#e74c3c;font-size:13px;">加载失败</p>';
+    container.innerHTML = '<div class="load-error"><p>加载失败：' + escHtml(e.message) + '</p><button class="btn-small btn-add" onclick="loadClassmates()">重试</button></div>';
   }
 }
 
@@ -503,12 +561,13 @@ async function unfriend(friendID) {
 async function loadStats() {
   try {
     const stats = await apiFetch('/api/stats');
-    document.getElementById('statPostCount').textContent = stats.post_count;
-    document.getElementById('statFriendCount').textContent = stats.friend_count;
-    document.getElementById('statPendingCount').textContent = stats.pending_count;
-    document.getElementById('statVisibleCount').textContent = stats.visible_post_count;
+    if (!stats) return;
+    const ids = { post_count: 'statPostCount', friend_count: 'statFriendCount', pending_count: 'statPendingCount', visible_post_count: 'statVisibleCount' };
+    for (const [key, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = stats[key] != null ? stats[key] : 0;
+    }
   } catch (e) {
-    // 统计区保持上次数据即可，不打断用户
     console.error('loadStats error:', e);
   }
 }
@@ -518,5 +577,9 @@ document.addEventListener('click', function(e) {
   if (e.target.id === 'detailModal') closeDetail();
 });
 
-// 启动
-init();
+// 启动 —— 使用 DOMContentLoaded 确保DOM就绪
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
