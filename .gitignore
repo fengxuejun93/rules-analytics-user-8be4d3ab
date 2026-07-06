@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+target/
+.next/
+.nuxt/
+.npm-cache/
+screenshots/
+trae_reply_traces/
+pending_*.json
+trae_collect_export.json
+trae_watch_status.json
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc

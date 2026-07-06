@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>校内网 - 老校园社交</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- 顶部导航 -->
+  <header class="top-bar">
+    <div class="logo">校内网</div>
+    <div class="user-switch">
+      <span>当前身份：</span>
+      <select id="userSelect"></select>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- 左侧：统计 + 同学/好友 -->
+    <aside class="sidebar-left">
+      <section class="stats-panel">
+        <h3>数据统计</h3>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-value" id="statPostCount">0</span>
+            <span class="stat-label">动态总数</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="statFriendCount">0</span>
+            <span class="stat-label">好友数</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="statPendingCount">0</span>
+            <span class="stat-label">待处理申请</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="statVisibleCount">0</span>
+            <span class="stat-label">可见动态</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="friends-panel">
+        <h3>同学 / 好友</h3>
+        <div id="classmatesList"></div>
+      </section>
+    </aside>
+
+    <!-- 中间：动态列表 -->
+    <main class="feed-main">
+      <!-- 发布入口 -->
+      <section class="publish-panel">
+        <h3>发布新动态</h3>
+        <textarea id="publishContent" placeholder="说点什么吧..." rows="2"></textarea>
+        <input type="text" id="publishPhoto" placeholder="照片URL（可选，留空自动生成）">
+        <div class="publish-row">
+          <select id="publishVisibility">
+            <option value="public">公开</option>
+            <option value="friends">仅好友</option>
+            <option value="self">仅自己</option>
+          </select>
+          <button id="publishBtn" onclick="createPost()">发布</button>
+        </div>
+      </section>
+
+      <!-- 动态列表 -->
+      <section class="feed-list" id="feedList">
+        <p class="loading">加载中...</p>
+      </section>
+    </main>
+  </div>
+
+  <!-- 动态详情弹窗 -->
+  <div class="modal-overlay" id="detailModal" style="display:none;">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeDetail()">&times;</button>
+      <div id="detailBody"></div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

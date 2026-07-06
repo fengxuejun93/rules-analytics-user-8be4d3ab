@@ -1,0 +1,347 @@
+package store
+
+import (
+	"sort"
+	"sync"
+	"time"
+
+	"campus-net/models"
+)
+
+// Store 内存数据存储
+type Store struct {
+	mu       sync.RWMutex
+	users    []models.User
+	posts    []models.Post
+	comments []models.Comment
+	friendRelations []models.FriendRelation
+	nextUserID    int
+	nextPostID    int
+	nextCommentID int
+	nextFriendID  int
+}
+
+// NewStore 创建存储并初始化种子数据
+func NewStore() *Store {
+	s := &Store{
+		nextUserID:    1,
+		nextPostID:    1,
+		nextCommentID: 1,
+		nextFriendID:  1,
+	}
+	s.seed()
+	return s
+}
+
+func (s *Store) seed() {
+	// 种子用户
+	users := []models.User{
+		{ID: 1, Name: "张三", AvatarURL: "https://i.pravatar.cc/80?img=1"},
+		{ID: 2, Name: "李四", AvatarURL: "https://i.pravatar.cc/80?img=2"},
+		{ID: 3, Name: "王五", AvatarURL: "https://i.pravatar.cc/80?img=3"},
+		{ID: 4, Name: "赵六", AvatarURL: "https://i.pravatar.cc/80?img=4"},
+		{ID: 5, Name: "钱七", AvatarURL: "https://i.pravatar.cc/80?img=5"},
+	}
+	s.users = users
+	s.nextUserID = 6
+
+	// 种子好友关系：1和2已是好友，3向1发了待确认申请
+	relations := []models.FriendRelation{
+		{ID: 1, FromID: 1, ToID: 2, Status: models.FriendStatusAccepted},
+		{ID: 2, FromID: 2, ToID: 1, Status: models.FriendStatusAccepted},
+		{ID: 3, FromID: 3, ToID: 1, Status: models.FriendStatusPending},
+	}
+	s.friendRelations = relations
+	s.nextFriendID = 4
+
+	// 种子动态
+	now := time.Now()
+	posts := []models.Post{
+		{ID: 1, AuthorID: 1, Content: "今天天气真好，校园里的银杏树黄了！", PhotoURL: "https://picsum.photos/seed/p1/600/400", Visibility: models.VisibilityPublic, CreatedAt: now.Add(-2 * time.Hour)},
+		{ID: 2, AuthorID: 2, Content: "图书馆占座成功，期末冲刺开始！", PhotoURL: "https://picsum.photos/seed/p2/600/400", Visibility: models.VisibilityFriends, CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: 3, AuthorID: 3, Content: "偷偷发一条仅自己可见的心情", PhotoURL: "https://picsum.photos/seed/p3/600/400", Visibility: models.VisibilitySelfOnly, CreatedAt: now.Add(-30 * time.Minute)},
+		{ID: 4, AuthorID: 4, Content: "食堂新出的红烧肉不错！", PhotoURL: "https://picsum.photos/seed/p4/600/400", Visibility: models.VisibilityPublic, CreatedAt: now.Add(-15 * time.Minute)},
+	}
+	s.posts = posts
+	s.nextPostID = 5
+
+	// 种子评论
+	comments := []models.Comment{
+		{ID: 1, PostID: 1, AuthorID: 2, Content: "确实很美！", ParentID: nil, CreatedAt: now.Add(-90 * time.Minute)},
+		{ID: 2, PostID: 1, AuthorID: 1, Content: "谢谢～", ParentID: intPtr(1), CreatedAt: now.Add(-80 * time.Minute)},
+		{ID: 3, PostID: 2, AuthorID: 1, Content: "加油！", ParentID: nil, CreatedAt: now.Add(-45 * time.Minute)},
+	}
+	s.comments = comments
+	s.nextCommentID = 4
+}
+
+func intPtr(i int) *int { return &i }
+
+// ===== 用户 =====
+
+func (s *Store) GetUser(id int) *models.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.users {
+		if s.users[i].ID == id {
+			return &s.users[i]
+		}
+	}
+	return nil
+}
+
+func (s *Store) GetAllUsers() []models.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cp := make([]models.User, len(s.users))
+	copy(cp, s.users)
+	return cp
+}
+
+// ===== 动态 =====
+
+func (s *Store) GetVisiblePosts(viewerID int) []models.Post {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.Post
+	for _, p := range s.posts {
+		if s.isPostVisible(p, viewerID) {
+			result = append(result, p)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	return result
+}
+
+func (s *Store) isPostVisible(p models.Post, viewerID int) bool {
+	switch p.Visibility {
+	case models.VisibilityPublic:
+		return true
+	case models.VisibilityFriends:
+		return p.AuthorID == viewerID || s.AreFriends(p.AuthorID, viewerID)
+	case models.VisibilitySelfOnly:
+		return p.AuthorID == viewerID
+	}
+	return false
+}
+
+func (s *Store) AreFriends(uid1, uid2 int) bool {
+	for _, r := range s.friendRelations {
+		if r.FromID == uid1 && r.ToID == uid2 && r.Status == models.FriendStatusAccepted {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) GetPost(id int) *models.Post {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.posts {
+		if s.posts[i].ID == id {
+			return &s.posts[i]
+		}
+	}
+	return nil
+}
+
+func (s *Store) CreatePost(authorID int, content, photoURL string, visibility models.Visibility) models.Post {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := models.Post{
+		ID:         s.nextPostID,
+		AuthorID:   authorID,
+		Content:    content,
+		PhotoURL:   photoURL,
+		Visibility: visibility,
+		CreatedAt:  time.Now(),
+	}
+	s.nextPostID++
+	s.posts = append(s.posts, p)
+	return p
+}
+
+func (s *Store) CountVisiblePosts(viewerID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, p := range s.posts {
+		if s.isPostVisible(p, viewerID) {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Store) CountAllPosts() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.posts)
+}
+
+// ===== 好友关系 =====
+
+func (s *Store) GetFriendStatus(viewerID, targetID int) models.FriendStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// 检查是否已是好友（双向accepted）
+	for _, r := range s.friendRelations {
+		if r.FromID == viewerID && r.ToID == targetID && r.Status == models.FriendStatusAccepted {
+			return models.FriendStatusAccepted
+		}
+	}
+	// 检查是否有待确认申请（任一方向）
+	for _, r := range s.friendRelations {
+		if r.FromID == viewerID && r.ToID == targetID && r.Status == models.FriendStatusPending {
+			return models.FriendStatusPending
+		}
+		if r.FromID == targetID && r.ToID == viewerID && r.Status == models.FriendStatusPending {
+			return "pending_received"
+		}
+	}
+	return models.FriendStatusNone
+}
+
+func (s *Store) GetFriends(userID int) []models.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var friends []models.User
+	friendIDs := map[int]bool{}
+	for _, r := range s.friendRelations {
+		if r.Status == models.FriendStatusAccepted {
+			if r.FromID == userID {
+				friendIDs[r.ToID] = true
+			}
+			if r.ToID == userID {
+				friendIDs[r.FromID] = true
+			}
+		}
+	}
+	for _, u := range s.users {
+		if friendIDs[u.ID] {
+			friends = append(friends, u)
+		}
+	}
+	return friends
+}
+
+func (s *Store) GetPendingReceived(userID int) []models.FriendRelation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.FriendRelation
+	for _, r := range s.friendRelations {
+		if r.ToID == userID && r.Status == models.FriendStatusPending {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+func (s *Store) SendFriendRequest(fromID, toID int) models.FriendRelation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := models.FriendRelation{
+		ID:     s.nextFriendID,
+		FromID: fromID,
+		ToID:   toID,
+		Status: models.FriendStatusPending,
+	}
+	s.nextFriendID++
+	s.friendRelations = append(s.friendRelations, r)
+	return r
+}
+
+func (s *Store) AcceptFriendRequest(relationID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.friendRelations {
+		if s.friendRelations[i].ID == relationID && s.friendRelations[i].Status == models.FriendStatusPending {
+			s.friendRelations[i].Status = models.FriendStatusAccepted
+			// 添加反向关系
+			rev := models.FriendRelation{
+				ID:     s.nextFriendID,
+				FromID: s.friendRelations[i].ToID,
+				ToID:   s.friendRelations[i].FromID,
+				Status: models.FriendStatusAccepted,
+			}
+			s.nextFriendID++
+			s.friendRelations = append(s.friendRelations, rev)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) CountFriends(userID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, r := range s.friendRelations {
+		if r.Status == models.FriendStatusAccepted {
+			if r.FromID == userID || r.ToID == userID {
+				count++
+			}
+		}
+	}
+	// 双向关系，除以2
+	return count / 2
+}
+
+func (s *Store) CountPending(userID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, r := range s.friendRelations {
+		if r.ToID == userID && r.Status == models.FriendStatusPending {
+			count++
+		}
+	}
+	return count
+}
+
+// ===== 评论/回复 =====
+
+func (s *Store) GetCommentsByPost(postID int) []models.Comment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.Comment
+	for _, c := range s.comments {
+		if c.PostID == postID {
+			result = append(result, c)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result
+}
+
+func (s *Store) CountCommentsByPost(postID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, c := range s.comments {
+		if c.PostID == postID {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Store) CreateComment(postID, authorID int, content string, parentID *int) models.Comment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := models.Comment{
+		ID:        s.nextCommentID,
+		PostID:    postID,
+		AuthorID:  authorID,
+		Content:   content,
+		ParentID:  parentID,
+		CreatedAt: time.Now(),
+	}
+	s.nextCommentID++
+	s.comments = append(s.comments, c)
+	return c
+}
