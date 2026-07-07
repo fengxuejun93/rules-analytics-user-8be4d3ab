@@ -2,6 +2,15 @@ package models
 
 import "time"
 
+// Role 用户角色
+type Role string
+
+const (
+	RoleStudent Role = "student"
+	RoleAuthor  Role = "author"
+	RoleAdmin   Role = "admin"
+)
+
 // Visibility 可见范围枚举
 type Visibility string
 
@@ -43,6 +52,7 @@ type Post struct {
 	Content    string     `json:"content"`
 	PhotoURL   string     `json:"photo_url"`
 	Visibility Visibility `json:"visibility"`
+	Hidden     bool       `json:"hidden"`
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
@@ -53,6 +63,7 @@ type Comment struct {
 	AuthorID  int       `json:"author_id"`
 	Content   string    `json:"content"`
 	ParentID  *int      `json:"parent_id"` // nil 表示顶级评论，否则为回复
+	Hidden    bool      `json:"hidden"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

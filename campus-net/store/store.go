@@ -121,12 +121,16 @@ func (s *Store) GetAllUsers() []models.User {
 
 // ===== 动态 =====
 
-func (s *Store) GetVisiblePosts(viewerID int) []models.Post {
+func (s *Store) GetVisiblePosts(viewerID int, role models.Role) []models.Post {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []models.Post
 	for _, p := range s.posts {
-		if s.isPostVisible(p, viewerID) {
+		// 管理员可看到被隐藏的动态，其他人看不到
+		if p.Hidden && role != models.RoleAdmin {
+			continue
+		}
+		if s.isPostVisible(p, viewerID, role) {
 			result = append(result, p)
 		}
 	}
@@ -136,7 +140,11 @@ func (s *Store) GetVisiblePosts(viewerID int) []models.Post {
 	return result
 }
 
-func (s *Store) isPostVisible(p models.Post, viewerID int) bool {
+func (s *Store) isPostVisible(p models.Post, viewerID int, role models.Role) bool {
+	// 管理员可看到所有动态（用于审核管理）
+	if role == models.RoleAdmin {
+		return true
+	}
 	switch p.Visibility {
 	case models.VisibilityPublic:
 		return true
@@ -184,12 +192,15 @@ func (s *Store) CreatePost(authorID int, content, photoURL string, visibility mo
 	return p
 }
 
-func (s *Store) CountVisiblePosts(viewerID int) int {
+func (s *Store) CountVisiblePosts(viewerID int, role models.Role) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	count := 0
 	for _, p := range s.posts {
-		if s.isPostVisible(p, viewerID) {
+		if p.Hidden && role != models.RoleAdmin {
+			continue
+		}
+		if s.isPostVisible(p, viewerID, role) {
 			count++
 		}
 	}
@@ -215,11 +226,18 @@ func (s *Store) CountMyPostsVisibleToOthers(authorID int) int {
 	return count
 }
 
-// CountAllComments 统计所有评论+回复总数
-func (s *Store) CountAllComments() int {
+// CountAllComments 统计所有评论+回复总数（非管理员不计数已隐藏的）
+func (s *Store) CountAllComments(role models.Role) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.comments)
+	count := 0
+	for _, c := range s.comments {
+		if c.Hidden && role != models.RoleAdmin {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // ===== 好友关系 =====
@@ -360,12 +378,15 @@ func (s *Store) CountPending(userID int) int {
 
 // ===== 评论/回复 =====
 
-func (s *Store) GetCommentsByPost(postID int) []models.Comment {
+func (s *Store) GetCommentsByPost(postID int, role models.Role) []models.Comment {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var result []models.Comment
 	for _, c := range s.comments {
 		if c.PostID == postID {
+			if c.Hidden && role != models.RoleAdmin {
+				continue
+			}
 			result = append(result, c)
 		}
 	}
@@ -375,12 +396,15 @@ func (s *Store) GetCommentsByPost(postID int) []models.Comment {
 	return result
 }
 
-func (s *Store) CountCommentsByPost(postID int) int {
+func (s *Store) CountCommentsByPost(postID int, role models.Role) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	count := 0
 	for _, c := range s.comments {
 		if c.PostID == postID {
+			if c.Hidden && role != models.RoleAdmin {
+				continue
+			}
 			count++
 		}
 	}
@@ -525,4 +549,107 @@ func (s *Store) GetPendingSent(userID int) []models.FriendRelation {
 		}
 	}
 	return result
+}
+
+// ===== 管理操作：隐藏/恢复/删除 =====
+
+// HidePost 隐藏动态（管理员）
+func (s *Store) HidePost(postID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.posts {
+		if s.posts[i].ID == postID {
+			s.posts[i].Hidden = true
+			return true
+		}
+	}
+	return false
+}
+
+// RestorePost 恢复动态（管理员）
+func (s *Store) RestorePost(postID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.posts {
+		if s.posts[i].ID == postID {
+			s.posts[i].Hidden = false
+			return true
+		}
+	}
+	return false
+}
+
+// DeletePost 删除动态（仅作者）
+func (s *Store) DeletePost(postID, authorID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.posts {
+		if p.ID == postID && p.AuthorID == authorID {
+			s.posts = append(s.posts[:i], s.posts[i+1:]...)
+			// 同时删除该动态的评论和点赞
+			for j := len(s.comments) - 1; j >= 0; j-- {
+				if s.comments[j].PostID == postID {
+					s.comments = append(s.comments[:j], s.comments[j+1:]...)
+				}
+			}
+			for j := len(s.likes) - 1; j >= 0; j-- {
+				if s.likes[j].PostID == postID {
+					s.likes = append(s.likes[:j], s.likes[j+1:]...)
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// GetComment 获取评论
+func (s *Store) GetComment(id int) *models.Comment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.comments {
+		if s.comments[i].ID == id {
+			return &s.comments[i]
+		}
+	}
+	return nil
+}
+
+// HideComment 隐藏评论（管理员）
+func (s *Store) HideComment(commentID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.comments {
+		if s.comments[i].ID == commentID {
+			s.comments[i].Hidden = true
+			return true
+		}
+	}
+	return false
+}
+
+// RestoreComment 恢复评论（管理员）
+func (s *Store) RestoreComment(commentID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.comments {
+		if s.comments[i].ID == commentID {
+			s.comments[i].Hidden = false
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteComment 删除评论（仅作者）
+func (s *Store) DeleteComment(commentID, authorID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.comments {
+		if c.ID == commentID && c.AuthorID == authorID {
+			s.comments = append(s.comments[:i], s.comments[i+1:]...)
+			return true
+		}
+	}
+	return false
 }

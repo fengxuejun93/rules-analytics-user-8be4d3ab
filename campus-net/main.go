@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"campus-net/handlers"
 	"campus-net/store"
@@ -17,9 +18,17 @@ func main() {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	// 静态文件
+	// 静态文件（仅非 /api/ 路径走静态服务）
 	fs := http.FileServer(http.Dir("static"))
-	mux.Handle("/", fs)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// API 路由已在 RegisterRoutes 注册，不会走到这里
+		// 防止默认匹配兜底
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
 
 	port := "8080"
 	if p := os.Getenv("PORT"); p != "" {

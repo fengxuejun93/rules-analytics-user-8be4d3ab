@@ -10,15 +10,35 @@
   <!-- 顶部导航 -->
   <header class="top-bar">
     <div class="logo">校内网</div>
-    <div class="user-switch">
-      <span>当前身份：</span>
-      <select id="userSelect"></select>
+    <div class="identity-switch">
+      <div class="user-switch">
+        <span>用户：</span>
+        <select id="userSelect"></select>
+      </div>
+      <div class="role-switch">
+        <span>角色：</span>
+        <select id="roleSelect">
+          <option value="student">普通学生</option>
+          <option value="author">动态作者</option>
+          <option value="admin">管理员</option>
+        </select>
+      </div>
     </div>
   </header>
 
   <div class="container">
-    <!-- 左侧：统计 + 同学/好友 -->
+    <!-- 左侧：当前用户 + 统计 + 同学/好友 -->
     <aside class="sidebar-left">
+      <section class="current-user-panel" id="currentUserPanel">
+        <div class="cu-avatar-wrap">
+          <img class="cu-avatar" id="cuAvatar" src="" alt="" onerror="this.style.display='none'">
+        </div>
+        <div class="cu-info">
+          <div class="cu-name" id="cuName">--</div>
+          <div class="cu-role" id="cuRole">--</div>
+        </div>
+      </section>
+
       <section class="stats-panel">
         <h3>数据统计</h3>
         <div class="stats-grid">
@@ -84,6 +104,27 @@
     <div class="modal-content">
       <button class="modal-close" id="modalCloseBtn">&times;</button>
       <div id="detailBody"></div>
+    </div>
+  </div>
+
+  <!-- 身份选择弹窗 -->
+  <div class="modal-overlay" id="identityModal" style="display:none;">
+    <div class="modal-content identity-modal-content">
+      <h3>请选择你的身份</h3>
+      <p class="identity-hint">当前身份信息缺失，请选择一个用户和角色后继续使用</p>
+      <div class="identity-select-group">
+        <label>用户：</label>
+        <select id="identityUserSelect"></select>
+      </div>
+      <div class="identity-select-group">
+        <label>角色：</label>
+        <select id="identityRoleSelect">
+          <option value="student">普通学生</option>
+          <option value="author">动态作者</option>
+          <option value="admin">管理员</option>
+        </select>
+      </div>
+      <button class="identity-confirm-btn" id="identityConfirmBtn">确认并进入</button>
     </div>
   </div>
 
