@@ -1,4 +1,4 @@
-// 校内网社交原型 - 前端逻辑
+// 校内网社交原型 - 前端逻辑（事件委托版，无行内onclick）
 const API = '';
 let currentUID = 1;
 let feedCache = [];
@@ -46,12 +46,11 @@ function escHtml(s) {
   return div.innerHTML;
 }
 
-// 安全取值，防止缺字段导致整页崩溃
 function safeStr(v, def) { return (v != null && v !== '') ? String(v) : (def || ''); }
 function safeNum(v, def) { return (v != null && !isNaN(v)) ? Number(v) : (def || 0); }
 function safeArr(v) { return Array.isArray(v) ? v : []; }
 
-// 页面级错误提示
+// ===== 页面级错误提示（用事件委托绑定重试） =====
 function showPageError(msg, retryFn) {
   let el = document.getElementById('pageError');
   if (!el) {
@@ -62,14 +61,18 @@ function showPageError(msg, retryFn) {
     if (topBar) topBar.after(el);
     else document.body.prepend(el);
   }
-  let retryBtn = '';
-  if (retryFn) {
-    const fnName = '__retry_' + Date.now();
-    window[fnName] = function() { el.style.display = 'none'; retryFn(); };
-    retryBtn = ' <button class="btn-small btn-add" onclick="' + fnName + '()">重试</button>';
-  }
-  el.innerHTML = escHtml(msg) + retryBtn;
+  el.innerHTML = '<span class="page-error-msg">' + escHtml(msg) + '</span>' +
+    (retryFn ? '<button class="btn-small btn-add page-retry-btn">重试</button>' : '');
   el.style.display = '';
+  if (retryFn) {
+    const btn = el.querySelector('.page-retry-btn');
+    if (btn) {
+      btn.onclick = function() {
+        el.style.display = 'none';
+        retryFn();
+      };
+    }
+  }
 }
 
 function hidePageError() {
@@ -77,27 +80,38 @@ function hidePageError() {
   if (el) el.style.display = 'none';
 }
 
-// 全局重试：重新加载所有首页数据（列表+统计+好友区）
-function retryAll() {
-  hidePageError();
-  init();
-}
-
 // ===== 初始化 =====
 let _booted = false;
 function boot() {
-  // 注册事件监听只做一次，防止 retryAll 重复绑定
   if (!_booted) {
     _booted = true;
+    // 静态按钮绑定
     const sel = document.getElementById('userSelect');
     if (sel) sel.addEventListener('change', onUserChange);
+    const pubBtn = document.getElementById('publishBtn');
+    if (pubBtn) pubBtn.addEventListener('click', createPost);
+    const closeBtn = document.getElementById('modalCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', closeDetail);
+    // 事件委托：动态列表
+    const feedList = document.getElementById('feedList');
+    if (feedList) feedList.addEventListener('click', handleFeedClick);
+    // 事件委托：同学/好友区
+    const classmatesList = document.getElementById('classmatesList');
+    if (classmatesList) classmatesList.addEventListener('click', handleClassmatesClick);
+    // 事件委托：详情弹窗
+    const detailBody = document.getElementById('detailBody');
+    if (detailBody) {
+      detailBody.addEventListener('click', handleDetailClick);
+      detailBody.addEventListener('keydown', handleDetailKeydown);
+      detailBody.addEventListener('change', handleDetailChange);
+    }
   }
   init();
   // 超时兜底：8秒后如果 feedList 仍在"加载中"，显示重试
   setTimeout(function() {
     const list = document.getElementById('feedList');
     if (list && list.querySelector('.loading')) {
-      list.innerHTML = '<div class="load-error"><p>加载超时，服务器可能未启动</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+      showLoadError(list, '加载超时，服务器可能未启动', retryAll);
     }
   }, 8000);
 }
@@ -124,7 +138,7 @@ async function init() {
 
   // 确保 feedList 不卡在"加载中"
   if (list && list.querySelector('.loading')) {
-    list.innerHTML = '<div class="load-error"><p>动态加载异常</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+    showLoadError(list, '动态加载异常', retryAll);
   }
 }
 
@@ -146,7 +160,6 @@ async function loadUsers() {
 function onUserChange(e) {
   currentUID = parseInt(e.target.value);
   feedCache = [];
-  // 关闭可能打开的详情弹窗
   document.getElementById('detailModal').style.display = 'none';
   currentDetailPostID = null;
   refresh();
@@ -157,6 +170,19 @@ async function refresh() {
   await Promise.allSettled([loadFeed(), loadClassmates(), loadStats()]);
 }
 
+// ===== 通用加载错误/空状态渲染 =====
+function showLoadError(container, msg, retryFn) {
+  const retryId = 'retryBtn_' + Math.random().toString(36).slice(2, 8);
+  container.innerHTML = '<div class="load-error"><p>' + escHtml(msg) + '</p><button class="btn-small btn-add" id="' + retryId + '">重试</button></div>';
+  const btn = document.getElementById(retryId);
+  if (btn && retryFn) btn.addEventListener('click', retryFn);
+}
+
+function retryAll() {
+  hidePageError();
+  init();
+}
+
 // ===== 动态列表 =====
 async function loadFeed() {
   const list = document.getElementById('feedList');
@@ -165,12 +191,12 @@ async function loadFeed() {
   try {
     const items = await apiFetch('/api/feed');
     if (!Array.isArray(items)) {
-      list.innerHTML = '<div class="load-error"><p>动态数据格式异常</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+      showLoadError(list, '动态数据格式异常', retryAll);
       feedCache = [];
       return;
     }
     if (items.length === 0) {
-      list.innerHTML = '<div class="load-error"><p>暂无可见动态</p><button class="btn-small btn-add" onclick="retryAll()">刷新</button></div>';
+      showLoadError(list, '暂无可见动态', retryAll);
       feedCache = [];
       return;
     }
@@ -187,10 +213,10 @@ async function loadFeed() {
     }
     list.innerHTML = htmlParts.join('');
     if (!list.querySelector('.feed-card')) {
-      list.innerHTML = '<div class="load-error"><p>渲染动态失败</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+      showLoadError(list, '渲染动态失败', retryAll);
     }
   } catch (e) {
-    list.innerHTML = '<div class="load-error"><p>加载动态失败：' + escHtml(e.message) + '</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+    showLoadError(list, '加载动态失败：' + e.message, retryAll);
     feedCache = [];
   }
 }
@@ -209,7 +235,6 @@ function renderFeedCard(item, index) {
   const authorName = safeStr(author.name, '未知用户');
   const authorAvatar = safeStr(author.avatar_url);
   const createdAt = safeStr(p.created_at);
-  const visibility = safeStr(p.visibility, 'public');
 
   // 评论预览（最多显示2条顶级评论）
   const comments = safeArr(item.comments);
@@ -239,14 +264,24 @@ function renderFeedCard(item, index) {
       '</div>' +
     '</div>' +
     '<div class="feed-content">' + escHtml(content) + '</div>' +
-    (photoUrl ? '<img class="feed-photo" src="' + photoUrl + '" alt="照片" onclick="openDetail(' + pid + ')" onerror="this.style.display=\'none\'">' : '') +
+    (photoUrl ? '<img class="feed-photo" src="' + photoUrl + '" alt="照片" data-action="openDetail" data-post-id="' + pid + '" onerror="this.style.display=\'none\'">' : '') +
     '<div class="feed-actions">' +
-      '<button class="' + likeCls + '" onclick="toggleLike(' + pid + ')">' + likeIcon + ' <span id="likeCount_' + pid + '">' + likeCount + '</span></button>' +
+      '<button class="' + likeCls + '" data-action="toggleLike" data-post-id="' + pid + '">' + likeIcon + ' <span id="likeCount_' + pid + '">' + likeCount + '</span></button>' +
       '<span class="feed-comment-count">\uD83D\uDCAC <span id="commentCount_' + pid + '">' + commentCount + '</span> 条评论</span>' +
-      '<button class="feed-action-btn" onclick="openDetail(' + pid + ')">查看详情</button>' +
+      '<button class="feed-action-btn" data-action="openDetail" data-post-id="' + pid + '">查看详情</button>' +
     '</div>' +
     commentPreview +
   '</div>';
+}
+
+// 事件委托：动态列表点击
+function handleFeedClick(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const postId = parseInt(target.dataset.postId);
+  if (action === 'toggleLike' && postId) toggleLike(postId);
+  if (action === 'openDetail' && postId) openDetail(postId);
 }
 
 // ===== 点赞 =====
@@ -334,8 +369,8 @@ function renderDetailError(msg) {
     '<div class="detail-error">' +
       '<p class="error-msg">' + escHtml(msg) + '</p>' +
       '<div class="detail-error-actions">' +
-        '<button class="feed-action-btn" onclick="openDetail(' + currentDetailPostID + ')">重试</button> ' +
-        '<button class="feed-action-btn" onclick="closeDetail()">返回动态列表</button>' +
+        '<button class="feed-action-btn" data-action="retryDetail">重试</button> ' +
+        '<button class="feed-action-btn" data-action="closeDetail">返回动态列表</button>' +
       '</div>' +
     '</div>';
   document.getElementById('detailModal').style.display = '';
@@ -350,7 +385,7 @@ function renderDetail(data) {
   const visSelector = isOwner ?
     '<div class="detail-vis-row">' +
       '<span>可见范围：</span>' +
-      '<select id="detailVisSelect" onchange="changeVisibility(' + (p.id || 0) + ')">' +
+      '<select id="detailVisSelect" data-action="changeVisibility" data-post-id="' + (p.id || 0) + '">' +
         '<option value="public"' + (p.visibility === 'public' ? ' selected' : '') + '>公开</option>' +
         '<option value="friends"' + (p.visibility === 'friends' ? ' selected' : '') + '>仅好友</option>' +
         '<option value="self"' + (p.visibility === 'self' ? ' selected' : '') + '>仅自己</option>' +
@@ -365,9 +400,10 @@ function renderDetail(data) {
   const authorName = safeStr(author.name, '未知用户');
   const authorAvatar = safeStr(author.avatar_url);
   const createdAt = safeStr(p.created_at);
+  const postId = p.id || 0;
 
   document.getElementById('detailBody').innerHTML =
-    '<input type="hidden" id="detailPostId" value="' + (p.id || '') + '">' +
+    '<input type="hidden" id="detailPostId" value="' + postId + '">' +
     '<div class="detail-author-row">' +
       '<img class="detail-avatar" src="' + authorAvatar + '" alt="' + escHtml(authorName) + '" onerror="this.style.display=\'none\'">' +
       '<div>' +
@@ -380,15 +416,54 @@ function renderDetail(data) {
     '<div class="detail-content">' + escHtml(content) + '</div>' +
     (photoUrl ? '<img class="detail-photo" src="' + photoUrl + '" alt="照片" onerror="this.style.display=\'none\'">' : '') +
     '<div class="detail-actions">' +
-      '<button id="detailLikeBtn" class="' + likeCls + '" onclick="toggleLike(' + (p.id || 0) + ')">' + likeIcon + ' <span id="detailLikeCount">' + likeCount + '</span> 赞</button>' +
+      '<button id="detailLikeBtn" class="' + likeCls + '" data-action="toggleLike" data-post-id="' + postId + '">' + likeIcon + ' <span id="detailLikeCount">' + likeCount + '</span> 赞</button>' +
       '<span class="detail-comment-info">\uD83D\uDCAC ' + commentCount + ' 条评论</span>' +
     '</div>' +
     '<div class="detail-section-title">评论 (' + comments.length + ')</div>' +
     '<div id="commentsContainer">' + renderComments(comments) + '</div>' +
     '<div class="comment-form">' +
-      '<input type="text" id="newCommentInput" placeholder="写评论..." onkeydown="if(event.key===\'Enter\')submitComment(' + (p.id || 0) + ')">' +
-      '<button onclick="submitComment(' + (p.id || 0) + ')">发表</button>' +
+      '<input type="text" id="newCommentInput" placeholder="写评论..." data-action="submitComment" data-post-id="' + postId + '">' +
+      '<button data-action="submitComment" data-post-id="' + postId + '">发表</button>' +
     '</div>';
+}
+
+// 事件委托：详情弹窗点击
+function handleDetailClick(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const postId = parseInt(target.dataset.postId) || currentDetailPostID;
+  const commentId = parseInt(target.dataset.commentId) || 0;
+
+  if (action === 'toggleLike' && postId) toggleLike(postId);
+  if (action === 'openDetail' && postId) openDetail(postId);
+  if (action === 'closeDetail') closeDetail();
+  if (action === 'retryDetail' && currentDetailPostID) openDetail(currentDetailPostID);
+  if (action === 'submitComment' && postId) submitComment(postId);
+  if (action === 'submitReply' && postId && commentId) submitReply(postId, commentId);
+  if (action === 'showReplyForm') showReplyForm(commentId);
+}
+
+// 事件委托：详情弹窗键盘
+function handleDetailKeydown(e) {
+  if (e.key !== 'Enter') return;
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const postId = parseInt(target.dataset.postId) || currentDetailPostID;
+  const commentId = parseInt(target.dataset.commentId) || 0;
+
+  if (action === 'submitComment' && postId) submitComment(postId);
+  if (action === 'submitReply' && postId && commentId) submitReply(postId, commentId);
+}
+
+// 事件委托：详情弹窗 change（可见范围）
+function handleDetailChange(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const postId = parseInt(target.dataset.postId);
+  if (action === 'changeVisibility' && postId) changeVisibility(postId);
 }
 
 // ===== 修改可见范围 =====
@@ -413,6 +488,7 @@ async function changeVisibility(postID) {
   }
 }
 
+// ===== 评论渲染 =====
 function renderComments(comments) {
   if (!comments || comments.length === 0) return '<p style="color:#999;font-size:13px;">暂无评论，来说点什么吧</p>';
   return comments.map(function(c, i) {
@@ -438,11 +514,11 @@ function renderCommentItem(c) {
         '<span class="comment-time">' + formatTime(cm.created_at) + '</span>' +
       '</div>' +
       '<div class="comment-body">' + escHtml(safeStr(cm.content, '（评论不可用）')) + '</div>' +
-      '<button class="comment-reply-btn" onclick="showReplyForm(' + commentId + ')">回复</button>' +
+      '<button class="comment-reply-btn" data-action="showReplyForm" data-comment-id="' + commentId + '">回复</button>' +
       '<div id="replyForm_' + commentId + '" style="display:none;" class="reply-form">' +
         '<div class="comment-form">' +
-          '<input type="text" id="replyInput_' + commentId + '" placeholder="回复 ' + escHtml(safeStr(ca.name, '未知')) + '..." onkeydown="if(event.key===\'Enter\')submitReply(' + postId + ', ' + commentId + ')">' +
-          '<button onclick="submitReply(' + postId + ', ' + commentId + ')">回复</button>' +
+          '<input type="text" id="replyInput_' + commentId + '" placeholder="回复 ' + escHtml(safeStr(ca.name, '未知')) + '..." data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">' +
+          '<button data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">回复</button>' +
         '</div>' +
       '</div>';
   const replies = safeArr(c.replies);
@@ -532,13 +608,13 @@ async function loadClassmates() {
         const relId = c.relation_id || 0;
         let statusHtml = '';
         if (s === 'accepted') {
-          statusHtml = '<span class="classmate-status">好友</span><button class="btn-small btn-unfriend" onclick="unfriend(' + cid + ')">解除</button>';
+          statusHtml = '<span class="classmate-status">好友</span><button class="btn-small btn-unfriend" data-action="unfriend" data-user-id="' + cid + '">解除</button>';
         } else if (s === 'pending') {
-          statusHtml = '<span class="classmate-status">待确认</span><button class="btn-small btn-cancel" onclick="cancelFriend(' + cid + ')">取消</button>';
+          statusHtml = '<span class="classmate-status">待确认</span><button class="btn-small btn-cancel" data-action="cancelFriend" data-user-id="' + cid + '">取消</button>';
         } else if (s === 'pending_received') {
-          statusHtml = '<span class="classmate-status">申请你</span><button class="btn-small btn-accept" onclick="acceptFriend(' + relId + ')">接受</button><button class="btn-small btn-reject" onclick="rejectFriend(' + relId + ')">拒绝</button>';
+          statusHtml = '<span class="classmate-status">申请你</span><button class="btn-small btn-accept" data-action="acceptFriend" data-relation-id="' + relId + '">接受</button><button class="btn-small btn-reject" data-action="rejectFriend" data-relation-id="' + relId + '">拒绝</button>';
         } else {
-          statusHtml = '<span class="classmate-status">陌生人</span><button class="btn-small btn-add" onclick="addFriend(' + cid + ')">添加</button>';
+          statusHtml = '<span class="classmate-status">陌生人</span><button class="btn-small btn-add" data-action="addFriend" data-user-id="' + cid + '">添加</button>';
         }
         return '<div class="classmate-item">' +
           '<img class="classmate-avatar" src="' + safeStr(u.avatar_url) + '" alt="' + escHtml(safeStr(u.name)) + '" onerror="this.style.display=\'none\'">' +
@@ -553,8 +629,23 @@ async function loadClassmates() {
       }
     }).join('');
   } catch (e) {
-    container.innerHTML = '<div class="load-error"><p>加载失败：' + escHtml(e.message) + '</p><button class="btn-small btn-add" onclick="retryAll()">重试</button></div>';
+    showLoadError(container, '加载失败：' + e.message, retryAll);
   }
+}
+
+// 事件委托：同学/好友区点击
+function handleClassmatesClick(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const userId = parseInt(target.dataset.userId) || 0;
+  const relationId = parseInt(target.dataset.relationId) || 0;
+
+  if (action === 'addFriend' && userId) addFriend(userId);
+  if (action === 'cancelFriend' && userId) cancelFriend(userId);
+  if (action === 'acceptFriend' && relationId) acceptFriend(relationId);
+  if (action === 'rejectFriend' && relationId) rejectFriend(relationId);
+  if (action === 'unfriend' && userId) unfriend(userId);
 }
 
 async function addFriend(toID) {
@@ -564,7 +655,7 @@ async function addFriend(toID) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ to_id: toID })
     });
-    refresh(); // 刷新列表+统计+好友区
+    refresh();
   } catch (e) {
     showPageError('发送申请失败：' + e.message);
   }
@@ -633,6 +724,7 @@ async function loadStats() {
       friend_count: 'statFriendCount',
       pending_count: 'statPendingCount',
       visible_post_count: 'statVisibleCount',
+      comment_count: 'statCommentCount',
       my_posts_visible_count: 'statMyVisibleCount'
     };
     for (const [key, id] of Object.entries(ids)) {
@@ -641,7 +733,6 @@ async function loadStats() {
     }
   } catch (e) {
     console.error('loadStats error:', e);
-    // 统计加载失败不阻塞，保留上次值或默认0
   }
 }
 
@@ -650,7 +741,7 @@ document.addEventListener('click', function(e) {
   if (e.target.id === 'detailModal') closeDetail();
 });
 
-// 启动 —— 使用 DOMContentLoaded 确保DOM就绪
+// 启动
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', boot);
 } else {

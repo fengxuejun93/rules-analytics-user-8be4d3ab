@@ -71,4 +71,5 @@ type Stats struct {
 	PendingCount         int `json:"pending_count"`
 	VisiblePostCount     int `json:"visible_post_count"`
 	MyPostsVisibleCount  int `json:"my_posts_visible_count"` // 当前用户的动态中对他人可见的数量
+	CommentCount         int `json:"comment_count"`          // 评论+回复总数
 }

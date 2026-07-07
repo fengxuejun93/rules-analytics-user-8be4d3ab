@@ -39,8 +39,12 @@
             <span class="stat-label">可见动态</span>
           </div>
           <div class="stat-item">
+            <span class="stat-value" id="statCommentCount">0</span>
+            <span class="stat-label">评论总数</span>
+          </div>
+          <div class="stat-item">
             <span class="stat-value" id="statMyVisibleCount">0</span>
-            <span class="stat-label">我的动态对他人可见</span>
+            <span class="stat-label">我的可见动态</span>
           </div>
         </div>
       </section>
@@ -64,7 +68,7 @@
             <option value="friends">仅好友</option>
             <option value="self">仅自己</option>
           </select>
-          <button id="publishBtn" onclick="createPost()">发布</button>
+          <button id="publishBtn">发布</button>
         </div>
       </section>
 
@@ -78,7 +82,7 @@
   <!-- 动态详情弹窗 -->
   <div class="modal-overlay" id="detailModal" style="display:none;">
     <div class="modal-content">
-      <button class="modal-close" onclick="closeDetail()">&times;</button>
+      <button class="modal-close" id="modalCloseBtn">&times;</button>
       <div id="detailBody"></div>
     </div>
   </div>

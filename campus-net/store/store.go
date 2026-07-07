@@ -215,6 +215,13 @@ func (s *Store) CountMyPostsVisibleToOthers(authorID int) int {
 	return count
 }
 
+// CountAllComments 统计所有评论+回复总数
+func (s *Store) CountAllComments() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.comments)
+}
+
 // ===== 好友关系 =====
 
 func (s *Store) GetFriendStatus(viewerID, targetID int) models.FriendStatus {

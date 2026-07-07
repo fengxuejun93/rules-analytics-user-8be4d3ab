@@ -432,6 +432,7 @@ func (h *Handlers) GetStats(w http.ResponseWriter, r *http.Request) {
 		PendingCount:         h.store.CountPending(uid),
 		VisiblePostCount:     h.store.CountVisiblePosts(uid),
 		MyPostsVisibleCount:  h.store.CountMyPostsVisibleToOthers(uid),
+		CommentCount:         h.store.CountAllComments(),
 	})
 }
 
