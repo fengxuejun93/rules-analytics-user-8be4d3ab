@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -64,27 +65,35 @@ func (s *Store) seed() {
 		{ID: 2, AuthorID: 2, Content: "图书馆占座成功，期末冲刺开始！", PhotoURL: "https://picsum.photos/seed/p2/600/400", Visibility: models.VisibilityFriends, CreatedAt: now.Add(-1 * time.Hour)},
 		{ID: 3, AuthorID: 3, Content: "偷偷发一条仅自己可见的心情", PhotoURL: "https://picsum.photos/seed/p3/600/400", Visibility: models.VisibilitySelfOnly, CreatedAt: now.Add(-30 * time.Minute)},
 		{ID: 4, AuthorID: 4, Content: "食堂新出的红烧肉不错！", PhotoURL: "https://picsum.photos/seed/p4/600/400", Visibility: models.VisibilityPublic, CreatedAt: now.Add(-15 * time.Minute)},
+		{ID: 5, AuthorID: 5, Content: "社团招新啦，快来报名！", PhotoURL: "https://picsum.photos/seed/p5/600/400", Visibility: models.VisibilityPublic, CreatedAt: now.Add(-10 * time.Minute)},
+		{ID: 6, AuthorID: 1, Content: "周末和同学去了趟郊外，风景很赞", PhotoURL: "https://picsum.photos/seed/p6/600/400", Visibility: models.VisibilityFriends, CreatedAt: now.Add(-5 * time.Minute)},
 	}
 	s.posts = posts
-	s.nextPostID = 5
+	s.nextPostID = 7
 
 	// 种子评论
 	comments := []models.Comment{
 		{ID: 1, PostID: 1, AuthorID: 2, Content: "确实很美！", ParentID: nil, CreatedAt: now.Add(-90 * time.Minute)},
 		{ID: 2, PostID: 1, AuthorID: 1, Content: "谢谢～", ParentID: intPtr(1), CreatedAt: now.Add(-80 * time.Minute)},
 		{ID: 3, PostID: 2, AuthorID: 1, Content: "加油！", ParentID: nil, CreatedAt: now.Add(-45 * time.Minute)},
+		{ID: 4, PostID: 4, AuthorID: 3, Content: "我也觉得好吃！", ParentID: nil, CreatedAt: now.Add(-12 * time.Minute)},
+		{ID: 5, PostID: 4, AuthorID: 1, Content: "下次一起去", ParentID: intPtr(4), CreatedAt: now.Add(-10 * time.Minute)},
+		{ID: 6, PostID: 5, AuthorID: 1, Content: "什么社团？", ParentID: nil, CreatedAt: now.Add(-8 * time.Minute)},
+		{ID: 7, PostID: 5, AuthorID: 5, Content: "摄影社和书法社！", ParentID: intPtr(6), CreatedAt: now.Add(-6 * time.Minute)},
 	}
 	s.comments = comments
-	s.nextCommentID = 4
+	s.nextCommentID = 8
 
 	// 种子点赞
 	likes := []models.Like{
 		{ID: 1, UserID: 1, PostID: 2, CreatedAt: now.Add(-50 * time.Minute)},
 		{ID: 2, UserID: 2, PostID: 1, CreatedAt: now.Add(-85 * time.Minute)},
 		{ID: 3, UserID: 1, PostID: 4, CreatedAt: now.Add(-10 * time.Minute)},
+		{ID: 4, UserID: 3, PostID: 1, CreatedAt: now.Add(-70 * time.Minute)},
+		{ID: 5, UserID: 4, PostID: 5, CreatedAt: now.Add(-7 * time.Minute)},
 	}
 	s.likes = likes
-	s.nextLikeID = 4
+	s.nextLikeID = 6
 }
 
 func intPtr(i int) *int { return &i }
@@ -193,6 +202,19 @@ func (s *Store) CountAllPosts() int {
 	return len(s.posts)
 }
 
+// CountMyPostsVisibleToOthers 统计当前用户的动态中对他人可见的数量
+func (s *Store) CountMyPostsVisibleToOthers(authorID int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, p := range s.posts {
+		if p.AuthorID == authorID && p.Visibility != models.VisibilitySelfOnly {
+			count++
+		}
+	}
+	return count
+}
+
 // ===== 好友关系 =====
 
 func (s *Store) GetFriendStatus(viewerID, targetID int) models.FriendStatus {
@@ -251,9 +273,23 @@ func (s *Store) GetPendingReceived(userID int) []models.FriendRelation {
 	return result
 }
 
-func (s *Store) SendFriendRequest(fromID, toID int) models.FriendRelation {
+func (s *Store) SendFriendRequest(fromID, toID int) (models.FriendRelation, error) {
+	if fromID == toID {
+		return models.FriendRelation{}, fmt.Errorf("不能添加自己为好友")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 检查是否已存在关系（任一方向、任一状态）
+	for _, r := range s.friendRelations {
+		if (r.FromID == fromID && r.ToID == toID) || (r.FromID == toID && r.ToID == fromID) {
+			if r.Status == models.FriendStatusAccepted {
+				return models.FriendRelation{}, fmt.Errorf("已经是好友")
+			}
+			if r.Status == models.FriendStatusPending {
+				return models.FriendRelation{}, fmt.Errorf("已存在待处理的好友申请")
+			}
+		}
+	}
 	r := models.FriendRelation{
 		ID:     s.nextFriendID,
 		FromID: fromID,
@@ -262,7 +298,7 @@ func (s *Store) SendFriendRequest(fromID, toID int) models.FriendRelation {
 	}
 	s.nextFriendID++
 	s.friendRelations = append(s.friendRelations, r)
-	return r
+	return r, nil
 }
 
 func (s *Store) AcceptFriendRequest(relationID int) bool {
@@ -289,16 +325,18 @@ func (s *Store) AcceptFriendRequest(relationID int) bool {
 func (s *Store) CountFriends(userID int) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	count := 0
+	friendIDs := map[int]bool{}
 	for _, r := range s.friendRelations {
 		if r.Status == models.FriendStatusAccepted {
-			if r.FromID == userID || r.ToID == userID {
-				count++
+			if r.FromID == userID {
+				friendIDs[r.ToID] = true
+			}
+			if r.ToID == userID {
+				friendIDs[r.FromID] = true
 			}
 		}
 	}
-	// 双向关系，除以2
-	return count / 2
+	return len(friendIDs)
 }
 
 func (s *Store) CountPending(userID int) int {

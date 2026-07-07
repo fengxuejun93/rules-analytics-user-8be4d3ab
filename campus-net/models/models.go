@@ -15,9 +15,10 @@ const (
 type FriendStatus string
 
 const (
-	FriendStatusAccepted FriendStatus = "accepted"
-	FriendStatusPending  FriendStatus = "pending"
-	FriendStatusNone     FriendStatus = "none"
+	FriendStatusAccepted        FriendStatus = "accepted"
+	FriendStatusPending         FriendStatus = "pending"
+	FriendStatusPendingReceived FriendStatus = "pending_received"
+	FriendStatusNone            FriendStatus = "none"
 )
 
 // User 用户
@@ -65,8 +66,9 @@ type Like struct {
 
 // Stats 统计信息
 type Stats struct {
-	PostCount       int `json:"post_count"`
-	FriendCount     int `json:"friend_count"`
-	PendingCount    int `json:"pending_count"`
-	VisiblePostCount int `json:"visible_post_count"`
+	PostCount            int `json:"post_count"`
+	FriendCount          int `json:"friend_count"`
+	PendingCount         int `json:"pending_count"`
+	VisiblePostCount     int `json:"visible_post_count"`
+	MyPostsVisibleCount  int `json:"my_posts_visible_count"` // 当前用户的动态中对他人可见的数量
 }

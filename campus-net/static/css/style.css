@@ -63,6 +63,9 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
+.stat-item:nth-child(5) {
+  grid-column: 1 / -1;
+}
 .stat-item {
   text-align: center;
   background: #f4f7fc;
@@ -403,4 +406,40 @@ body {
   border: 1px solid #d0d0d0;
   border-radius: 4px;
   font-size: 13px;
+}
+
+/* 动态卡片内评论预览 */
+.feed-comment-preview {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #f0f0f0;
+}
+.feed-cp-item {
+  font-size: 12px;
+  color: #555;
+  line-height: 1.6;
+}
+.feed-cp-author {
+  font-weight: bold;
+  color: #333;
+}
+.feed-cp-replies {
+  color: #999;
+  font-size: 11px;
+}
+.feed-cp-more {
+  font-size: 11px;
+  color: #225fba;
+  margin-top: 4px;
+  cursor: pointer;
+}
+
+/* 详情错误操作按钮 */
+.detail-error-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
 }

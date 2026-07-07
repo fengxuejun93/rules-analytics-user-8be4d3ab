@@ -54,14 +54,15 @@ func (h *Handlers) GetUsers(w http.ResponseWriter, r *http.Request) {
 
 // ===== 动态 Feed =====
 
-// FeedItem 动态列表项
+// FeedItem 动态列表项（含评论/回复完整结构）
 type FeedItem struct {
-	Post            models.Post `json:"post"`
-	Author          models.User `json:"author"`
-	CommentCount    int         `json:"comment_count"`
-	LikeCount       int         `json:"like_count"`
-	IsLiked         bool        `json:"is_liked"`
-	VisibilityLabel string      `json:"visibility_label"`
+	Post            models.Post   `json:"post"`
+	Author          models.User   `json:"author"`
+	Comments        []CommentItem `json:"comments"`
+	CommentCount    int           `json:"comment_count"`
+	LikeCount       int           `json:"like_count"`
+	IsLiked         bool          `json:"is_liked"`
+	VisibilityLabel string        `json:"visibility_label"`
 }
 
 // GetFeed 获取可见动态列表
@@ -74,9 +75,12 @@ func (h *Handlers) GetFeed(w http.ResponseWriter, r *http.Request) {
 		if author == nil {
 			continue
 		}
+		comments := h.store.GetCommentsByPost(p.ID)
+		commentItems := buildCommentTree(comments, h.store)
 		items = append(items, FeedItem{
 			Post:            p,
 			Author:          *author,
+			Comments:        commentItems,
 			CommentCount:    h.store.CountCommentsByPost(p.ID),
 			LikeCount:       h.store.CountLikesByPost(p.ID),
 			IsLiked:         h.store.IsLikedByUser(uid, p.ID),
@@ -189,7 +193,9 @@ func buildCommentTree(comments []models.Comment, s *store.Store) []CommentItem {
 	}
 
 	for i := range topLevel {
-		topLevel[i].Replies = repliesMap[topLevel[i].Comment.ID]
+		if replies, ok := repliesMap[topLevel[i].Comment.ID]; ok {
+			topLevel[i].Replies = replies
+		}
 	}
 	return topLevel
 }
@@ -329,7 +335,11 @@ func (h *Handlers) SendFriendRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid request", 400)
 		return
 	}
-	rel := h.store.SendFriendRequest(uid, req.ToID)
+	rel, err := h.store.SendFriendRequest(uid, req.ToID)
+	if err != nil {
+		writeError(w, err.Error(), 400)
+		return
+	}
 	writeJSON(w, rel)
 }
 
@@ -417,10 +427,11 @@ func (h *Handlers) UpdatePostVisibility(w http.ResponseWriter, r *http.Request) 
 func (h *Handlers) GetStats(w http.ResponseWriter, r *http.Request) {
 	uid := h.getCurrentUser(r)
 	writeJSON(w, models.Stats{
-		PostCount:        h.store.CountAllPosts(),
-		FriendCount:      h.store.CountFriends(uid),
-		PendingCount:     h.store.CountPending(uid),
-		VisiblePostCount: h.store.CountVisiblePosts(uid),
+		PostCount:            h.store.CountAllPosts(),
+		FriendCount:          h.store.CountFriends(uid),
+		PendingCount:         h.store.CountPending(uid),
+		VisiblePostCount:     h.store.CountVisiblePosts(uid),
+		MyPostsVisibleCount:  h.store.CountMyPostsVisibleToOthers(uid),
 	})
 }
 
