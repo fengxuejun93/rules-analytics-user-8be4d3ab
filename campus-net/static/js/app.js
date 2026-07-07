@@ -1,7 +1,8 @@
-// 校内网社交原型 - 前端逻辑（事件委托版，无行内onclick）
+// 校内网社交原型 - 前端逻辑（事件委托版，全异常状态覆盖）
 const API = '';
 let currentUID = 1;
 let feedCache = [];
+let _refreshLock = false;  // 防并发刷新锁
 
 // ===== 工具函数 =====
 function uid() { return currentUID; }
@@ -50,7 +51,7 @@ function safeStr(v, def) { return (v != null && v !== '') ? String(v) : (def || 
 function safeNum(v, def) { return (v != null && !isNaN(v)) ? Number(v) : (def || 0); }
 function safeArr(v) { return Array.isArray(v) ? v : []; }
 
-// ===== 页面级错误提示（用事件委托绑定重试） =====
+// ===== 页面级错误提示 =====
 function showPageError(msg, retryFn) {
   let el = document.getElementById('pageError');
   if (!el) {
@@ -66,12 +67,7 @@ function showPageError(msg, retryFn) {
   el.style.display = '';
   if (retryFn) {
     const btn = el.querySelector('.page-retry-btn');
-    if (btn) {
-      btn.onclick = function() {
-        el.style.display = 'none';
-        retryFn();
-      };
-    }
+    if (btn) btn.onclick = function() { el.style.display = 'none'; retryFn(); };
   }
 }
 
@@ -80,12 +76,21 @@ function hidePageError() {
   if (el) el.style.display = 'none';
 }
 
+// ===== 通用加载错误/空状态渲染（稳定事件绑定，不拼接行内代码） =====
+function showLoadError(container, msg, retryFn) {
+  const retryId = 'retryBtn_' + Math.random().toString(36).slice(2, 8);
+  container.innerHTML = '<div class="load-error"><p>' + escHtml(msg) + '</p>' +
+    '<button class="btn-small btn-add" id="' + retryId + '">重试</button></div>';
+  const btn = document.getElementById(retryId);
+  if (btn && retryFn) btn.addEventListener('click', retryFn);
+}
+
 // ===== 初始化 =====
 let _booted = false;
 function boot() {
   if (!_booted) {
     _booted = true;
-    // 静态按钮绑定
+    // 静态按钮绑定（只绑一次）
     const sel = document.getElementById('userSelect');
     if (sel) sel.addEventListener('change', onUserChange);
     const pubBtn = document.getElementById('publishBtn');
@@ -98,7 +103,7 @@ function boot() {
     // 事件委托：同学/好友区
     const classmatesList = document.getElementById('classmatesList');
     if (classmatesList) classmatesList.addEventListener('click', handleClassmatesClick);
-    // 事件委托：详情弹窗
+    // 事件委托：详情弹窗（click + keydown + change）
     const detailBody = document.getElementById('detailBody');
     if (detailBody) {
       detailBody.addEventListener('click', handleDetailClick);
@@ -120,12 +125,15 @@ async function init() {
   hidePageError();
   const list = document.getElementById('feedList');
   if (list) list.innerHTML = '<p class="loading">加载中...</p>';
+  // 统计先显示"--"表示加载中（不是0）
+  setStatsLoading();
 
   // 加载用户选择器（失败不阻塞后续）
   try {
     await loadUsers();
   } catch (e) {
     console.error('loadUsers error:', e);
+    // 用户列表加载失败仍可继续，用默认uid
   }
 
   // 加载核心数据
@@ -136,9 +144,9 @@ async function init() {
     showPageError('数据加载失败：' + e.message, init);
   }
 
-  // 确保 feedList 不卡在"加载中"
+  // 兜底：无论如何 feedList 不能停在"加载中"
   if (list && list.querySelector('.loading')) {
-    showLoadError(list, '动态加载异常', retryAll);
+    showLoadError(list, '动态加载异常，请重试', retryAll);
   }
 }
 
@@ -148,13 +156,17 @@ async function loadUsers() {
   const sel = document.getElementById('userSelect');
   if (!sel) return;
   sel.innerHTML = '';
-  users.forEach(u => {
+  users.forEach(function(u) {
     const opt = document.createElement('option');
     opt.value = u.id;
     opt.textContent = u.name;
     if (u.id === currentUID) opt.selected = true;
     sel.appendChild(opt);
   });
+  // 检查当前uid是否在列表中
+  if (!users.some(function(u) { return u.id === currentUID; })) {
+    showPageError('当前身份 (uid=' + currentUID + ') 不在用户列表中');
+  }
 }
 
 function onUserChange(e) {
@@ -165,17 +177,32 @@ function onUserChange(e) {
   refresh();
 }
 
-// 统一刷新：列表 + 统计 + 好友区
+// ===== 统一刷新：列表 + 统计 + 好友区（加锁防并发） =====
 async function refresh() {
-  await Promise.allSettled([loadFeed(), loadClassmates(), loadStats()]);
+  if (_refreshLock) return;
+  _refreshLock = true;
+  try {
+    await Promise.allSettled([loadFeed(), loadClassmates(), loadStats()]);
+  } finally {
+    _refreshLock = false;
+  }
 }
 
-// ===== 通用加载错误/空状态渲染 =====
-function showLoadError(container, msg, retryFn) {
-  const retryId = 'retryBtn_' + Math.random().toString(36).slice(2, 8);
-  container.innerHTML = '<div class="load-error"><p>' + escHtml(msg) + '</p><button class="btn-small btn-add" id="' + retryId + '">重试</button></div>';
-  const btn = document.getElementById(retryId);
-  if (btn && retryFn) btn.addEventListener('click', retryFn);
+// ===== 统计加载中/失败状态 =====
+function setStatsLoading() {
+  const ids = ['statPostCount', 'statFriendCount', 'statPendingCount', 'statVisibleCount', 'statCommentCount', 'statMyVisibleCount'];
+  ids.forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '--';
+  });
+}
+
+function setStatsError() {
+  const ids = ['statPostCount', 'statFriendCount', 'statPendingCount', 'statVisibleCount', 'statCommentCount', 'statMyVisibleCount'];
+  ids.forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el && el.textContent === '--') el.textContent = '--';
+  });
 }
 
 function retryAll() {
@@ -191,13 +218,23 @@ async function loadFeed() {
   try {
     const items = await apiFetch('/api/feed');
     if (!Array.isArray(items)) {
-      showLoadError(list, '动态数据格式异常', retryAll);
+      showLoadError(list, '动态数据格式异常，请重试', retryAll);
       feedCache = [];
       return;
     }
     if (items.length === 0) {
-      showLoadError(list, '暂无可见动态', retryAll);
+      // 空动态：显示空状态 + 发布引导
       feedCache = [];
+      const emptyId = 'emptyFeedPublish_' + Math.random().toString(36).slice(2, 8);
+      list.innerHTML = '<div class="empty-feed">' +
+        '<p>暂无可见动态</p>' +
+        '<p class="empty-hint">发布一条新动态，或切换其他身份查看</p>' +
+        '<button class="btn-small btn-add" id="' + emptyId + '">去发布</button>' +
+      '</div>';
+      const goPub = document.getElementById(emptyId);
+      if (goPub) goPub.addEventListener('click', function() {
+        document.getElementById('publishContent').focus();
+      });
       return;
     }
     feedCache = items;
@@ -208,12 +245,13 @@ async function loadFeed() {
         htmlParts.push(renderFeedCard(items[i], i));
       } catch (renderErr) {
         console.error('renderFeedCard error at index', i, renderErr);
-        htmlParts.push('<div class="feed-card"><div class="feed-content" style="color:#999;">动态内容暂时无法显示</div></div>');
+        htmlParts.push('<div class="feed-card feed-card-incomplete"><div class="feed-content" style="color:#999;">动态内容暂时无法显示</div></div>');
       }
     }
     list.innerHTML = htmlParts.join('');
+    // 终极兜底：如果渲染后仍然没有卡片
     if (!list.querySelector('.feed-card')) {
-      showLoadError(list, '渲染动态失败', retryAll);
+      showLoadError(list, '渲染动态失败，请重试', retryAll);
     }
   } catch (e) {
     showLoadError(list, '加载动态失败：' + e.message, retryAll);
@@ -222,6 +260,10 @@ async function loadFeed() {
 }
 
 function renderFeedCard(item, index) {
+  // item 整体为null/undefined
+  if (!item) {
+    return '<div class="feed-card feed-card-incomplete"><div class="feed-content" style="color:#999;">动态数据不完整</div></div>';
+  }
   const p = item.post || {};
   const author = item.author || {};
   const pid = p.id || ('idx_' + index);
@@ -235,6 +277,10 @@ function renderFeedCard(item, index) {
   const authorName = safeStr(author.name, '未知用户');
   const authorAvatar = safeStr(author.avatar_url);
   const createdAt = safeStr(p.created_at);
+  const visibility = safeStr(p.visibility, 'public');
+
+  // 是否缺少关键字段（用于显示数据不完整标记）
+  const hasMissing = !item.post || !item.author || !p.id;
 
   // 评论预览（最多显示2条顶级评论）
   const comments = safeArr(item.comments);
@@ -243,24 +289,29 @@ function renderFeedCard(item, index) {
     const previewList = comments.slice(0, 2);
     commentPreview = '<div class="feed-comment-preview">' +
       previewList.map(function(c) {
-        const ca = c.author || {};
-        const cm = c.comment || {};
-        const replyCount = safeArr(c.replies).length;
-        return '<div class="feed-cp-item"><span class="feed-cp-author">' + escHtml(safeStr(ca.name, '未知')) + '</span>: ' + escHtml(safeStr(cm.content, '（评论不可用）')) +
-          (replyCount > 0 ? ' <span class="feed-cp-replies">(' + replyCount + '条回复)</span>' : '') +
-        '</div>';
+        try {
+          const ca = c.author || {};
+          const cm = c.comment || {};
+          const replyCount = safeArr(c.replies).length;
+          return '<div class="feed-cp-item"><span class="feed-cp-author">' + escHtml(safeStr(ca.name, '未知')) + '</span>: ' + escHtml(safeStr(cm.content, '（评论不可用）')) +
+            (replyCount > 0 ? ' <span class="feed-cp-replies">(' + replyCount + '条回复)</span>' : '') +
+          '</div>';
+        } catch (e) {
+          return '<div class="feed-cp-item" style="color:#999;">评论数据不完整</div>';
+        }
       }).join('') +
       (comments.length > 2 ? '<div class="feed-cp-more">还有 ' + (comments.length - 2) + ' 条评论</div>' : '') +
     '</div>';
   }
 
-  return '<div class="feed-card" id="feedCard_' + pid + '">' +
+  return '<div class="feed-card' + (hasMissing ? ' feed-card-incomplete' : '') + '" id="feedCard_' + pid + '">' +
     '<div class="feed-header">' +
       '<img class="feed-avatar" src="' + authorAvatar + '" alt="' + escHtml(authorName) + '" onerror="this.style.display=\'none\'">' +
       '<div>' +
         '<span class="feed-author">' + escHtml(authorName) + '</span> ' +
         '<span class="feed-time">' + formatTime(createdAt) + '</span> ' +
         '<span class="feed-visibility">' + escHtml(visLabel) + '</span>' +
+        (hasMissing ? ' <span class="feed-incomplete-tag">数据不完整</span>' : '') +
       '</div>' +
     '</div>' +
     '<div class="feed-content">' + escHtml(content) + '</div>' +
@@ -294,6 +345,7 @@ async function toggleLike(postID) {
     });
     updateCardLike(postID, data.liked, data.like_count);
     updateDetailLike(postID, data.liked, data.like_count);
+    // 更新缓存
     for (const item of feedCache) {
       if (item.post && item.post.id === postID) {
         item.is_liked = data.liked;
@@ -317,11 +369,8 @@ function updateCardLike(postID, liked, likeCount) {
 }
 
 function updateDetailLike(postID, liked, likeCount) {
-  const el = document.getElementById('detailLikeCount');
-  if (!el) return;
   const detailPostId = document.getElementById('detailPostId');
   if (!detailPostId || parseInt(detailPostId.value) !== postID) return;
-  el.textContent = likeCount;
   const btn = document.getElementById('detailLikeBtn');
   if (btn) {
     btn.className = liked ? 'like-btn liked' : 'like-btn';
@@ -331,19 +380,22 @@ function updateDetailLike(postID, liked, likeCount) {
 
 // ===== 发布动态 =====
 async function createPost() {
-  const content = document.getElementById('publishContent').value.trim();
+  const contentEl = document.getElementById('publishContent');
+  const content = contentEl ? contentEl.value.trim() : '';
   if (!content) { alert('请输入内容'); return; }
-  const photo = document.getElementById('publishPhoto').value.trim();
-  const visibility = document.getElementById('publishVisibility').value;
+  const photoEl = document.getElementById('publishPhoto');
+  const photo = photoEl ? photoEl.value.trim() : '';
+  const visEl = document.getElementById('publishVisibility');
+  const visibility = visEl ? visEl.value : 'public';
   try {
     await apiFetch('/api/posts/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: content, photo_url: photo, visibility: visibility })
     });
-    document.getElementById('publishContent').value = '';
-    document.getElementById('publishPhoto').value = '';
-    document.getElementById('publishVisibility').value = 'public';
+    if (contentEl) contentEl.value = '';
+    if (photoEl) photoEl.value = '';
+    if (visEl) visEl.value = 'public';
     refresh();
   } catch (e) {
     showPageError('发布失败：' + e.message);
@@ -355,13 +407,15 @@ let currentDetailPostID = null;
 
 async function openDetail(postID) {
   currentDetailPostID = postID;
+  // 先显示加载中
+  document.getElementById('detailBody').innerHTML = '<p class="loading">加载详情中...</p>';
+  document.getElementById('detailModal').style.display = '';
   try {
     const data = await apiFetch('/api/posts/detail?id=' + postID);
     renderDetail(data);
   } catch (e) {
     renderDetailError(e.message);
   }
-  document.getElementById('detailModal').style.display = '';
 }
 
 function renderDetailError(msg) {
@@ -373,12 +427,16 @@ function renderDetailError(msg) {
         '<button class="feed-action-btn" data-action="closeDetail">返回动态列表</button>' +
       '</div>' +
     '</div>';
-  document.getElementById('detailModal').style.display = '';
 }
 
 function renderDetail(data) {
-  const p = (data && data.post) || {};
-  const author = (data && data.author) || {};
+  // 数据不完整兜底
+  if (!data) {
+    renderDetailError('动态数据为空');
+    return;
+  }
+  const p = data.post || {};
+  const author = data.author || {};
   const likeIcon = data.is_liked ? '♥' : '♡';
   const likeCls = data.is_liked ? 'like-btn liked' : 'like-btn';
   const isOwner = p.author_id === currentUID;
@@ -441,10 +499,10 @@ function handleDetailClick(e) {
   if (action === 'retryDetail' && currentDetailPostID) openDetail(currentDetailPostID);
   if (action === 'submitComment' && postId) submitComment(postId);
   if (action === 'submitReply' && postId && commentId) submitReply(postId, commentId);
-  if (action === 'showReplyForm') showReplyForm(commentId);
+  if (action === 'showReplyForm' && commentId) showReplyForm(commentId);
 }
 
-// 事件委托：详情弹窗键盘
+// 事件委托：详情弹窗键盘（Enter提交）
 function handleDetailKeydown(e) {
   if (e.key !== 'Enter') return;
   const target = e.target.closest('[data-action]');
@@ -457,7 +515,7 @@ function handleDetailKeydown(e) {
   if (action === 'submitReply' && postId && commentId) submitReply(postId, commentId);
 }
 
-// 事件委托：详情弹窗 change（可见范围）
+// 事件委托：详情弹窗 change（可见范围选择器）
 function handleDetailChange(e) {
   const target = e.target.closest('[data-action]');
   if (!target) return;
@@ -480,8 +538,7 @@ async function changeVisibility(postID) {
     const visLabel = { public: '公开', friends: '仅好友', self: '仅自己' }[visibility] || visibility;
     const labelEl = document.querySelector('.detail-author-row .feed-visibility');
     if (labelEl) labelEl.textContent = visLabel;
-    // 刷新列表、统计和好友区（可见范围变化影响列表和可见动态数）
-    refresh();
+    refresh(); // 可见范围变化影响列表和可见动态数
   } catch (e) {
     showPageError('修改可见范围失败：' + e.message);
     openDetail(postID);
@@ -490,13 +547,15 @@ async function changeVisibility(postID) {
 
 // ===== 评论渲染 =====
 function renderComments(comments) {
-  if (!comments || comments.length === 0) return '<p style="color:#999;font-size:13px;">暂无评论，来说点什么吧</p>';
+  if (!comments || comments.length === 0) {
+    return '<p style="color:#999;font-size:13px;">暂无评论，来说点什么吧</p>';
+  }
   return comments.map(function(c, i) {
     try {
       return renderCommentItem(c);
     } catch (e) {
       console.error('renderCommentItem error', i, e);
-      return '';
+      return '<div class="comment-item" style="color:#999;">评论数据不完整</div>';
     }
   }).join('');
 }
@@ -514,26 +573,29 @@ function renderCommentItem(c) {
         '<span class="comment-time">' + formatTime(cm.created_at) + '</span>' +
       '</div>' +
       '<div class="comment-body">' + escHtml(safeStr(cm.content, '（评论不可用）')) + '</div>' +
-      '<button class="comment-reply-btn" data-action="showReplyForm" data-comment-id="' + commentId + '">回复</button>' +
-      '<div id="replyForm_' + commentId + '" style="display:none;" class="reply-form">' +
-        '<div class="comment-form">' +
-          '<input type="text" id="replyInput_' + commentId + '" placeholder="回复 ' + escHtml(safeStr(ca.name, '未知')) + '..." data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">' +
-          '<button data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">回复</button>' +
-        '</div>' +
-      '</div>';
+      (commentId ? '<button class="comment-reply-btn" data-action="showReplyForm" data-comment-id="' + commentId + '">回复</button>' : '') +
+      (commentId ? '<div id="replyForm_' + commentId + '" style="display:none;" class="reply-form"><div class="comment-form">' +
+        '<input type="text" id="replyInput_' + commentId + '" placeholder="回复 ' + escHtml(safeStr(ca.name, '未知')) + '..." data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">' +
+        '<button data-action="submitReply" data-post-id="' + postId + '" data-comment-id="' + commentId + '">回复</button>' +
+      '</div></div>' : '');
+
   const replies = safeArr(c.replies);
   if (replies.length > 0) {
     html += '<div class="replies-list">' + replies.map(function(r) {
-      const ra = r.author || {};
-      const rm = r.comment || {};
-      return '<div class="reply-item">' +
-        '<div class="comment-header">' +
-          '<img class="comment-avatar" src="' + safeStr(ra.avatar_url) + '" alt="' + escHtml(safeStr(ra.name, '未知')) + '" onerror="this.style.display=\'none\'">' +
-          '<span class="comment-author">' + escHtml(safeStr(ra.name, '未知')) + '</span> ' +
-          '<span class="comment-time">' + formatTime(rm.created_at) + '</span>' +
-        '</div>' +
-        '<div class="comment-body">' + escHtml(safeStr(rm.content, '（回复不可用）')) + '</div>' +
-      '</div>';
+      try {
+        const ra = r.author || {};
+        const rm = r.comment || {};
+        return '<div class="reply-item">' +
+          '<div class="comment-header">' +
+            '<img class="comment-avatar" src="' + safeStr(ra.avatar_url) + '" alt="' + escHtml(safeStr(ra.name, '未知')) + '" onerror="this.style.display=\'none\'">' +
+            '<span class="comment-author">' + escHtml(safeStr(ra.name, '未知')) + '</span> ' +
+            '<span class="comment-time">' + formatTime(rm.created_at) + '</span>' +
+          '</div>' +
+          '<div class="comment-body">' + escHtml(safeStr(rm.content, '（回复不可用）')) + '</div>' +
+        '</div>';
+      } catch (e) {
+        return '<div class="reply-item" style="color:#999;">回复数据不完整</div>';
+      }
     }).join('') + '</div>';
   }
   html += '</div>';
@@ -629,7 +691,7 @@ async function loadClassmates() {
       }
     }).join('');
   } catch (e) {
-    showLoadError(container, '加载失败：' + e.message, retryAll);
+    showLoadError(container, '加载好友失败：' + e.message, retryAll);
   }
 }
 
@@ -718,7 +780,10 @@ async function unfriend(friendID) {
 async function loadStats() {
   try {
     const stats = await apiFetch('/api/stats');
-    if (!stats) return;
+    if (!stats) {
+      setStatsError();
+      return;
+    }
     const ids = {
       post_count: 'statPostCount',
       friend_count: 'statFriendCount',
@@ -733,6 +798,9 @@ async function loadStats() {
     }
   } catch (e) {
     console.error('loadStats error:', e);
+    // 统计加载失败：保持"--"并显示重试
+    setStatsError();
+    showPageError('统计加载失败，部分数据可能不准确', retryAll);
   }
 }
 

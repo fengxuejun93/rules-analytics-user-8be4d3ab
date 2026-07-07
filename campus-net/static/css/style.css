@@ -440,3 +440,33 @@ body {
   gap: 10px;
   justify-content: center;
 }
+
+/* 数据不完整标记 */
+.feed-card-incomplete {
+  border-left: 3px solid #f0ad4e;
+}
+.feed-incomplete-tag {
+  display: inline-block;
+  background: #fef0e0;
+  color: #e6a23c;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 4px;
+}
+
+/* 空动态引导 */
+.empty-feed {
+  text-align: center;
+  padding: 40px 20px;
+  color: #999;
+}
+.empty-feed p:first-child {
+  font-size: 16px;
+  color: #666;
+  margin-bottom: 8px;
+}
+.empty-hint {
+  font-size: 13px;
+  margin-bottom: 16px;
+}
