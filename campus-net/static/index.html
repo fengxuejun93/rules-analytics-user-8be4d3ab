@@ -27,7 +27,7 @@
   </header>
 
   <div class="container">
-    <!-- 左侧：当前用户 + 统计 + 同学/好友 -->
+    <!-- 左侧：当前用户 + 统计 + 分组 + 同学/好友 -->
     <aside class="sidebar-left">
       <section class="current-user-panel" id="currentUserPanel">
         <div class="cu-avatar-wrap">
@@ -37,6 +37,11 @@
           <div class="cu-name" id="cuName">--</div>
           <div class="cu-role" id="cuRole">--</div>
         </div>
+      </section>
+
+      <section class="permissions-panel" id="permissionsPanel">
+        <h3>权限说明</h3>
+        <div id="permissionsBody"></div>
       </section>
 
       <section class="stats-panel">
@@ -69,6 +74,11 @@
         </div>
       </section>
 
+      <section class="groups-panel">
+        <h3>好友分组</h3>
+        <div id="groupsList"></div>
+      </section>
+
       <section class="friends-panel">
         <h3>同学 / 好友</h3>
         <div id="classmatesList"></div>
@@ -86,7 +96,12 @@
           <select id="publishVisibility">
             <option value="public">公开</option>
             <option value="friends">仅好友</option>
+            <option value="group">指定分组</option>
             <option value="self">仅自己</option>
+          </select>
+          <select id="publishVisibleGroup" style="display:none;">
+            <option value="classmate">同班同学</option>
+            <option value="roommate">室友</option>
           </select>
           <button id="publishBtn">发布</button>
         </div>

@@ -1,9 +1,10 @@
-// 校内网社交原型 - 前端逻辑（含角色权限）
+// 校内网社交原型 - 前端逻辑（含角色权限 + 好友分组/黑名单/可见范围）
 const API = '';
 let currentUID = 1;
 let currentRole = 'student';
 let feedCache = [];
 let _refreshLock = false;
+let groupCache = []; // 当前用户的分组信息
 
 function uid() { return currentUID; }
 function role() { return currentRole; }
@@ -48,34 +49,41 @@ function safeArr(v) { return Array.isArray(v) ? v : []; }
 
 const ROLE_LABELS = { student: '普通学生', author: '动态作者', admin: '管理员' };
 
+// ===== 集中权限系统 =====
+// 权限矩阵：学生=查看/互动；作者=学生+发布/编辑/删除自己内容；管理员=隐藏/恢复
 const Permissions = {
-  canAddFriend:      () => role() === 'student' || role() === 'author',
-  canComment:        () => role() === 'student' || role() === 'author',
-  canLike:           () => role() === 'student' || role() === 'author',
-  canPublish:        () => role() === 'student' || role() === 'author',
-  canManageFriends:  () => role() === 'student' || role() === 'author',
-  canEditVisibility: (postAuthorId) => role() === 'author' && postAuthorId === uid(),
-  canDeletePost:     (postAuthorId) => role() === 'author' && postAuthorId === uid(),
-  canDeleteComment:  (commentAuthorId) => role() === 'author' && commentAuthorId === uid(),
-  canHidePost:       () => role() === 'admin',
-  canRestorePost:    (isHidden) => role() === 'admin' && isHidden,
-  canHideComment:    () => role() === 'admin',
-  canRestoreComment: (isHidden) => role() === 'admin' && isHidden,
-  canViewHidden:     () => role() === 'admin',
+  // 学生+作者都可：查看、点赞、评论、回复、好友、黑名单
+  canAddFriend:       () => role() === 'student' || role() === 'author',
+  canComment:         () => role() === 'student' || role() === 'author',
+  canLike:            () => role() === 'student' || role() === 'author',
+  canManageFriends:   () => role() === 'student' || role() === 'author',
+  canManageBlacklist: () => role() === 'student' || role() === 'author',
+  // 仅作者：发布、修改可见范围、删除自己的动态/评论
+  canPublish:         () => role() === 'author',
+  canEditVisibility:  (postAuthorId) => role() === 'author' && postAuthorId === uid(),
+  canDeletePost:      (postAuthorId) => role() === 'author' && postAuthorId === uid(),
+  canDeleteComment:   (commentAuthorId) => role() === 'author' && commentAuthorId === uid(),
+  canChangeVisibility:() => role() === 'author',
+  // 仅管理员：隐藏/恢复动态和评论
+  canHidePost:        () => role() === 'admin',
+  canRestorePost:     (isHidden) => role() === 'admin' && isHidden,
+  canHideComment:     () => role() === 'admin',
+  canRestoreComment:  (isHidden) => role() === 'admin' && isHidden,
+  canViewHidden:      () => role() === 'admin',
   check: function(action, context) {
     switch (action) {
-      case 'addFriend':      return this.canAddFriend();
-      case 'comment':        return this.canComment();
-      case 'like':           return this.canLike();
-      case 'publish':        return this.canPublish();
-      case 'editVisibility': return this.canEditVisibility(context && context.authorId);
-      case 'deletePost':     return this.canDeletePost(context && context.authorId);
-      case 'deleteComment':  return this.canDeleteComment(context && context.authorId);
-      case 'hidePost':       return this.canHidePost();
-      case 'restorePost':    return this.canRestorePost(context && context.hidden);
-      case 'hideComment':    return this.canHideComment();
-      case 'restoreComment': return this.canRestoreComment(context && context.hidden);
-      default:               return false;
+      case 'addFriend':       return this.canAddFriend();
+      case 'comment':         return this.canComment();
+      case 'like':            return this.canLike();
+      case 'publish':         return this.canPublish();
+      case 'editVisibility':  return this.canEditVisibility(context && context.authorId);
+      case 'deletePost':      return this.canDeletePost(context && context.authorId);
+      case 'deleteComment':   return this.canDeleteComment(context && context.authorId);
+      case 'hidePost':        return this.canHidePost();
+      case 'restorePost':     return this.canRestorePost(context && context.hidden);
+      case 'hideComment':     return this.canHideComment();
+      case 'restoreComment':  return this.canRestoreComment(context && context.hidden);
+      default:                return false;
     }
   }
 };
@@ -120,14 +128,18 @@ function showPermissionDenied(msg) {
   showPageError(msg || '当前角色无权执行此操作');
 }
 
+function showBlacklistDenied(authorName) {
+  showPageError((authorName || '对方') + '已将你加入黑名单，你无法进行此操作');
+}
+
 let currentUserInfo = null;
 
 async function loadCurrentUser() {
   try {
     const me = await apiFetch('/api/me');
-    if (me && me.valid) { currentUserInfo = me; renderCurrentUser(me); }
-    else { currentUserInfo = null; renderCurrentUserMissing(); }
-  } catch (e) { currentUserInfo = null; renderCurrentUserMissing(); }
+    if (me && me.valid) { currentUserInfo = me; groupCache = me.groups || []; renderCurrentUser(me); }
+    else { currentUserInfo = null; groupCache = []; renderCurrentUserMissing(); }
+  } catch (e) { currentUserInfo = null; groupCache = []; renderCurrentUserMissing(); }
 }
 
 function renderCurrentUser(me) {
@@ -227,6 +239,11 @@ function boot() {
     });
     const cuPanel = document.getElementById('currentUserPanel');
     if (cuPanel) cuPanel.addEventListener('click', function() { showIdentityPrompt(); });
+    const groupsList = document.getElementById('groupsList');
+    if (groupsList) groupsList.addEventListener('click', handleGroupsClick);
+    // 发布可见范围切换时更新分组子选择器
+    const pubVis = document.getElementById('publishVisibility');
+    if (pubVis) pubVis.addEventListener('change', onPublishVisChange);
   }
   init();
   setTimeout(function() {
@@ -294,13 +311,26 @@ async function onRoleChange(e) {
 function updatePublishPanel() {
   const panel = document.querySelector('.publish-panel');
   if (!panel) return;
-  panel.style.display = (role() === 'admin') ? 'none' : '';
+  panel.style.display = (role() === 'author') ? '' : 'none';
+}
+
+// 发布区可见范围切换：显示/隐藏分组子选择器
+function onPublishVisChange() {
+  const visEl = document.getElementById('publishVisibility');
+  const groupSel = document.getElementById('publishVisibleGroup');
+  if (!visEl || !groupSel) return;
+  if (visEl.value === 'group') {
+    groupSel.style.display = '';
+  } else {
+    groupSel.style.display = 'none';
+    groupSel.value = '';
+  }
 }
 
 async function refresh() {
   if (_refreshLock) return;
   _refreshLock = true;
-  try { await Promise.allSettled([loadFeed(), loadClassmates(), loadStats()]); }
+  try { await Promise.allSettled([loadFeed(), loadClassmates(), loadStats(), loadGroups(), loadPermissions()]); }
   finally { _refreshLock = false; }
 }
 
@@ -317,6 +347,7 @@ function setStatsPlaceholder() {
 }
 function retryAll() { hidePageError(); init(); }
 
+// ===== 动态列表 =====
 async function loadFeed() {
   const list = document.getElementById('feedList');
   if (!list) return;
@@ -349,6 +380,8 @@ function renderFeedCard(item, index) {
   const p = item.post || {};
   const author = item.author || {};
   const pid = p.id || ('idx_' + index);
+  const isBL = !!item.is_blacklisted;
+  const canLike = !!item.can_like;
   const likeIcon = item.is_liked ? '♥' : '♡';
   const likeCls = item.is_liked ? 'like-btn liked' : 'like-btn';
   const likeCount = safeNum(item.like_count);
@@ -363,8 +396,10 @@ function renderFeedCard(item, index) {
   const hasMissing = !item.post || !item.author || !p.id;
 
   let actionBtns = '';
-  if (Permissions.canLike()) {
+  if (canLike) {
     actionBtns += '<button class="'+likeCls+'" data-action="toggleLike" data-post-id="'+pid+'">'+likeIcon+' <span id="likeCount_'+pid+'">'+likeCount+'</span></button>';
+  } else if (isBL) {
+    actionBtns += '<span class="feed-action-disabled blacklist-disabled" title="你已被作者拉黑">'+likeIcon+' '+likeCount+'（被拉黑）</span>';
   } else {
     actionBtns += '<span class="feed-action-disabled">'+likeIcon+' '+likeCount+'</span>';
   }
@@ -393,7 +428,7 @@ function renderFeedCard(item, index) {
   return '<div class="feed-card'+(hasMissing?' feed-card-incomplete':'')+(isHidden?' feed-card-hidden':'')+'" id="feedCard_'+pid+'">' +
     '<div class="feed-header"><img class="feed-avatar" src="'+authorAvatar+'" alt="'+escHtml(authorName)+'" onerror="this.style.display=\'none\'"><div>' +
     '<span class="feed-author">'+escHtml(authorName)+'</span> <span class="feed-time">'+formatTime(createdAt)+'</span> <span class="feed-visibility">'+escHtml(visLabel)+'</span>' +
-    (isHidden?' <span class="feed-hidden-tag">已隐藏</span>':'')+(hasMissing?' <span class="feed-incomplete-tag">数据不完整</span>':'') +
+    (isHidden?' <span class="feed-hidden-tag">已隐藏</span>':'')+(isBL?' <span class="feed-blacklist-tag">被拉黑</span>':'')+(hasMissing?' <span class="feed-incomplete-tag">数据不完整</span>':'') +
     '</div></div>' +
     '<div class="feed-content">'+escHtml(content)+'</div>' +
     (photoUrl?'<img class="feed-photo" src="'+photoUrl+'" alt="照片" data-action="openDetail" data-post-id="'+pid+'" onerror="this.style.display=\'none\'">':'') +
@@ -415,7 +450,18 @@ function handleFeedClick(e) {
   if (action==='deletePost' && postId) deletePost(postId, authorId);
 }
 
+// ===== 点赞（含黑名单检查） =====
 async function toggleLike(postID) {
+  // 从feedCache找黑名单状态
+  let isBL = false, authorName = '';
+  for (const item of feedCache) {
+    if (item.post && item.post.id === postID) {
+      isBL = !!item.is_blacklisted;
+      authorName = safeStr(item.author && item.author.name, '');
+      break;
+    }
+  }
+  if (isBL) { showBlacklistDenied(authorName); return; }
   if (!Permissions.check('like')) { showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权点赞'); return; }
   try {
     const data = await apiFetch('/api/likes/toggle', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({post_id:postID}) });
@@ -439,8 +485,9 @@ function updateDetailLike(postID, liked, likeCount) {
   if (btn) { btn.className=liked?'like-btn liked':'like-btn'; btn.innerHTML=(liked?'♥':'♡')+' <span id="detailLikeCount">'+likeCount+'</span> 赞'; }
 }
 
+// ===== 发布动态（含分组可见） =====
 async function createPost() {
-  if (!Permissions.check('publish')) { showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权发布动态'); return; }
+  if (!Permissions.check('publish')) { showPermissionDenied('普通学生无权发布动态，仅动态作者可发布'); return; }
   const contentEl = document.getElementById('publishContent');
   const content = contentEl ? contentEl.value.trim() : '';
   if (!content) { alert('请输入内容'); return; }
@@ -448,15 +495,20 @@ async function createPost() {
   const photo = photoEl ? photoEl.value.trim() : '';
   const visEl = document.getElementById('publishVisibility');
   const visibility = visEl ? visEl.value : 'public';
+  const groupEl = document.getElementById('publishVisibleGroup');
+  const visibleGroup = (visibility === 'group' && groupEl) ? groupEl.value : '';
+  if (visibility === 'group' && !visibleGroup) { alert('选择指定分组可见时，请选择分组类型'); return; }
   try {
-    await apiFetch('/api/posts/create', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:content,photo_url:photo,visibility:visibility}) });
+    await apiFetch('/api/posts/create', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:content,photo_url:photo,visibility:visibility,visible_group:visibleGroup}) });
     if (contentEl) contentEl.value = '';
     if (photoEl) photoEl.value = '';
     if (visEl) visEl.value = 'public';
+    if (groupEl) { groupEl.value = ''; groupEl.style.display = 'none'; }
     refresh();
   } catch (e) { showPageError('发布失败：'+e.message); }
 }
 
+// ===== 管理员隐藏/恢复/删除 =====
 async function hidePost(postID) {
   if (!Permissions.check('hidePost')) { showPermissionDenied('仅管理员可隐藏动态'); return; }
   try { await apiFetch('/api/posts/hide', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({post_id:postID}) }); refresh(); if (currentDetailPostID===postID) openDetail(postID); }
@@ -472,7 +524,7 @@ async function restorePost(postID) {
 async function deletePost(postID, postAuthorId) {
   var aid = postAuthorId||0;
   if (!aid) { for (const item of feedCache) { if (item.post && item.post.id===postID) { aid=item.post.author_id; break; } } }
-  if (!Permissions.check('deletePost',{authorId:aid})) { showPermissionDenied('仅动态作者角色可删除自己的动态'); return; }
+  if (!Permissions.check('deletePost',{authorId:aid})) { showPermissionDenied(role()==='student'?'普通学生无权删除动态，仅动态作者可删除':'仅动态作者可删除自己的动态'); return; }
   if (!confirm('确定删除这条动态？删除后不可恢复。')) return;
   try {
     await apiFetch('/api/posts/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({post_id:postID}) });
@@ -506,22 +558,29 @@ function cacheCommentAuthors(comments) {
 async function deleteComment(commentID, commentAuthorId) {
   var aid = commentAuthorId||0;
   if (!aid) aid = findCommentAuthorId(commentID)||0;
-  if (!Permissions.check('deleteComment',{authorId:aid})) { showPermissionDenied('仅动态作者角色可删除自己的评论'); return; }
+  if (!Permissions.check('deleteComment',{authorId:aid})) { showPermissionDenied(role()==='student'?'普通学生无权删除评论，仅动态作者可删除':'仅评论作者可删除自己的评论'); return; }
   if (!confirm('确定删除这条评论？')) return;
   try { await apiFetch('/api/comments/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({comment_id:commentID}) }); if (currentDetailPostID) openDetail(currentDetailPostID); refresh(); }
   catch (e) { showPageError('删除评论失败：'+e.message); }
 }
 
+// ===== 动态详情（含无权查看状态、黑名单提示、可见范围编辑+预览） =====
 let currentDetailPostID = null;
+let _detailIsBlacklisted = false;
+let _detailAuthorName = '';
 
 async function openDetail(postID) {
   currentDetailPostID = postID;
   _detailCommentMap = {};
+  _detailIsBlacklisted = false;
+  _detailAuthorName = '';
   document.getElementById('detailBody').innerHTML = '<p class="loading">加载详情中...</p>';
   document.getElementById('detailModal').style.display = '';
   try {
     const data = await apiFetch('/api/posts/detail?id='+postID);
     cacheCommentAuthors(data && data.comments);
+    _detailIsBlacklisted = !!data.is_blacklisted;
+    _detailAuthorName = data.author ? safeStr(data.author.name, '') : '';
     renderDetail(data);
   } catch (e) { renderDetailError(e.message); }
 }
@@ -532,14 +591,35 @@ function renderDetailError(msg) {
 
 function renderDetail(data) {
   if (!data) { renderDetailError('动态数据为空'); return; }
+
+  // 无权查看状态
+  if (data.no_permission) {
+    const author = data.author || {};
+    const authorName = safeStr(author.name, '未知用户');
+    const visLabel = safeStr(data.visibility_label);
+    document.getElementById('detailBody').innerHTML =
+      '<div class="detail-no-permission">' +
+      '<div class="detail-np-icon">🔒</div>' +
+      '<h3>无权查看此动态</h3>' +
+      '<p class="detail-np-info">该动态由 <strong>'+escHtml(authorName)+'</strong> 发布，可见范围为 <strong>'+escHtml(visLabel)+'</strong></p>' +
+      (data.is_blacklisted ? '<p class="detail-np-bl">你已被作者加入黑名单</p>' : '') +
+      '<button class="feed-action-btn" data-action="closeDetail">返回动态列表</button>' +
+      '</div>';
+    return;
+  }
+
   const p = data.post||{};
   const author = data.author||{};
   const likeIcon = data.is_liked?'♥':'♡';
   const likeCls = data.is_liked?'like-btn liked':'like-btn';
   const isHidden = !!p.hidden;
+  const isBL = !!data.is_blacklisted;
+  const canLike = !!data.can_like;
+  const canComment = !!data.can_comment;
 
+  // 可见范围编辑器（含分组选择和预览）
   const visSelector = data.can_edit_visibility ?
-    '<div class="detail-vis-row"><span>可见范围：</span><select id="detailVisSelect" data-action="changeVisibility" data-post-id="'+(p.id||0)+'" data-author-id="'+(p.author_id||0)+'"><option value="public"'+(p.visibility==='public'?' selected':'')+'>公开</option><option value="friends"'+(p.visibility==='friends'?' selected':'')+'>仅好友</option><option value="self"'+(p.visibility==='self'?' selected':'')+'>仅自己</option></select></div>' : '';
+    renderVisEditor(p, data.visible_user_preview || []) : '';
 
   const commentCount = safeNum(data.comment_count);
   const likeCount = safeNum(data.like_count);
@@ -552,8 +632,10 @@ function renderDetail(data) {
   const postId = p.id||0;
 
   let detailActions = '';
-  if (Permissions.canLike()) {
+  if (canLike) {
     detailActions += '<button id="detailLikeBtn" class="'+likeCls+'" data-action="toggleLike" data-post-id="'+postId+'">'+likeIcon+' <span id="detailLikeCount">'+likeCount+'</span> 赞</button>';
+  } else if (isBL) {
+    detailActions += '<span class="feed-action-disabled blacklist-disabled" title="你已被作者拉黑">'+likeIcon+' '+likeCount+' 赞（被拉黑）</span>';
   } else {
     detailActions += '<span class="feed-action-disabled">'+likeIcon+' '+likeCount+' 赞（'+escHtml(ROLE_LABELS[role()])+'不可点赞）</span>';
   }
@@ -565,20 +647,23 @@ function renderDetail(data) {
   }
   if (data.can_delete) {
     detailActions += ' <button class="btn-small btn-author-delete" data-action="deletePost" data-post-id="'+postId+'" data-author-id="'+(p.author_id||0)+'">删除动态</button>';
-  } else if (role()!=='admin' && !(role()==='author' && p.author_id===uid())) {
+  } else if (role() !== 'admin') {
     detailActions += ' <button class="btn-small btn-disabled-action" data-action="tryDeletePost" data-post-id="'+postId+'">删除</button>';
   }
 
+  // 评论表单（黑名单不可评论）
   let commentForm = '';
-  if (data.can_comment) {
+  if (canComment) {
     commentForm = '<div class="comment-form"><input type="text" id="newCommentInput" placeholder="写评论..." data-action="submitComment" data-post-id="'+postId+'"><button data-action="submitComment" data-post-id="'+postId+'">发表</button></div>';
+  } else if (isBL) {
+    commentForm = '<div class="comment-form-disabled blacklist-disabled">'+escHtml(authorName)+'已将你加入黑名单，你无法评论此动态</div>';
   } else {
     commentForm = '<div class="comment-form-disabled">当前角色（'+escHtml(ROLE_LABELS[role()])+'）无权评论</div>';
   }
 
   document.getElementById('detailBody').innerHTML =
     '<input type="hidden" id="detailPostId" value="'+postId+'">' +
-    '<div class="detail-author-row"><img class="detail-avatar" src="'+authorAvatar+'" alt="'+escHtml(authorName)+'" onerror="this.style.display=\'none\'"><div><span class="feed-author">'+escHtml(authorName)+'</span> <span class="feed-time">'+formatTime(createdAt)+'</span> <span class="feed-visibility">'+escHtml(safeStr(data.visibility_label))+'</span>'+(isHidden?' <span class="feed-hidden-tag">已隐藏</span>':'')+'</div></div>' +
+    '<div class="detail-author-row"><img class="detail-avatar" src="'+authorAvatar+'" alt="'+escHtml(authorName)+'" onerror="this.style.display=\'none\'"><div><span class="feed-author">'+escHtml(authorName)+'</span> <span class="feed-time">'+formatTime(createdAt)+'</span> <span class="feed-visibility">'+escHtml(safeStr(data.visibility_label))+'</span>'+(isHidden?' <span class="feed-hidden-tag">已隐藏</span>':'')+(isBL?' <span class="feed-blacklist-tag">被拉黑</span>':'')+'</div></div>' +
     visSelector +
     '<div class="detail-content">'+escHtml(content)+'</div>' +
     (photoUrl?'<img class="detail-photo" src="'+photoUrl+'" alt="照片" onerror="this.style.display=\'none\'">':'') +
@@ -586,6 +671,40 @@ function renderDetail(data) {
     '<div class="detail-section-title">评论 ('+commentCount+')</div>' +
     '<div id="commentsContainer">'+renderComments(comments)+'</div>' +
     commentForm;
+}
+
+// 可见范围编辑器：选择器 + 分组子选择 + 可见预览
+function renderVisEditor(p, previewUsers) {
+  const postId = p.id||0;
+  const authorId = p.author_id||0;
+  const curVis = p.visibility || 'public';
+  const curGroup = p.visible_group || '';
+  const showGroup = curVis === 'group';
+
+  // 可见预览
+  let previewHtml = '';
+  if (previewUsers.length > 0) {
+    previewHtml = '<div class="vis-preview"><span class="vis-preview-label">可见用户预览：</span>' +
+      previewUsers.map(function(u) {
+        return '<span class="vis-preview-user"><img class="vis-preview-avatar" src="'+safeStr(u.avatar_url)+'" alt="" onerror="this.style.display=\'none\'">'+escHtml(safeStr(u.name))+'</span>';
+      }).join('') + '</div>';
+  } else {
+    previewHtml = '<div class="vis-preview"><span class="vis-preview-label">可见用户预览：</span><span class="vis-preview-empty">仅自己可见</span></div>';
+  }
+
+  return '<div class="detail-vis-row">' +
+    '<span>可见范围：</span>' +
+    '<select id="detailVisSelect" data-action="changeVisibility" data-post-id="'+postId+'" data-author-id="'+authorId+'">' +
+    '<option value="public"'+(curVis==='public'?' selected':'')+'>公开</option>' +
+    '<option value="friends"'+(curVis==='friends'?' selected':'')+'>仅好友</option>' +
+    '<option value="group"'+(curVis==='group'?' selected':'')+'>指定分组</option>' +
+    '<option value="self"'+(curVis==='self'?' selected':'')+'>仅自己</option>' +
+    '</select>' +
+    '<select id="detailVisGroupSelect" data-action="changeVisGroup" style="'+(showGroup?'':'display:none')+'">' +
+    '<option value="classmate"'+(curGroup==='classmate'?' selected':'')+'>同班同学</option>' +
+    '<option value="roommate"'+(curGroup==='roommate'?' selected':'')+'>室友</option>' +
+    '</select>' +
+    '</div>' + previewHtml;
 }
 
 function handleDetailClick(e) {
@@ -610,9 +729,9 @@ function handleDetailClick(e) {
   if (action==='restoreComment'&&commentId) restoreComment(commentId);
   if (action==='deleteComment'&&commentId) deleteComment(commentId,commentAuthorId);
   if (action==='tryHidePost') showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权隐藏动态，仅管理员可操作');
-  if (action==='tryDeletePost') showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权删除此动态，仅动态作者可删除自己的动态');
+  if (action==='tryDeletePost') showPermissionDenied(role()==='student'?'普通学生无权删除动态，仅动态作者可删除自己的动态':'当前角色无权删除此动态');
   if (action==='tryHideComment') showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权隐藏评论，仅管理员可操作');
-  if (action==='tryDeleteComment') showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权删除此评论，仅评论作者可删除自己的评论');
+  if (action==='tryDeleteComment') showPermissionDenied(role()==='student'?'普通学生无权删除评论，仅动态作者可删除自己的评论':'当前角色无权删除此评论');
 }
 
 function handleDetailKeydown(e) {
@@ -633,18 +752,45 @@ function handleDetailChange(e) {
   const postId = parseInt(target.dataset.postId);
   const authorId = parseInt(target.dataset.authorId) || 0;
   if (action==='changeVisibility'&&postId) changeVisibility(postId,authorId);
+  if (action==='changeVisGroup') onDetailVisGroupChange();
+}
+
+// 详情里分组子选择器切换
+function onDetailVisGroupChange() {
+  // 当分组类型改变时，也保存可见范围
+  const visEl = document.getElementById('detailVisSelect');
+  const groupEl = document.getElementById('detailVisGroupSelect');
+  if (!visEl || !groupEl) return;
+  const postId = parseInt(visEl.dataset.postId) || 0;
+  const authorId = parseInt(visEl.dataset.authorId) || 0;
+  if (postId && visEl.value === 'group') changeVisibility(postId, authorId);
 }
 
 async function changeVisibility(postID, postAuthorId) {
-  if (!Permissions.check('editVisibility',{authorId:postAuthorId})) { showPermissionDenied('仅动态作者可修改本人动态的可见范围'); return; }
+  // 管理员不能改可见范围
+  if (role() === 'admin') { showPermissionDenied('管理员不能修改作者的可见范围，也不能替作者调整分组范围'); return; }
+  // 学生不能改可见范围
+  if (role() === 'student') { showPermissionDenied('普通学生无权修改可见范围，仅动态作者可修改'); return; }
+  if (!Permissions.check('editVisibility',{authorId:postAuthorId})) { showPermissionDenied('仅作者可修改本人动态的可见范围'); return; }
   const sel = document.getElementById('detailVisSelect');
   if (!sel) return;
   const visibility = sel.value;
+
+  // 分组子选择器
+  const groupSel = document.getElementById('detailVisGroupSelect');
+  if (visibility === 'group' && groupSel) {
+    groupSel.style.display = '';
+  } else if (groupSel) {
+    groupSel.style.display = 'none';
+  }
+
+  const visibleGroup = (visibility === 'group' && groupSel) ? groupSel.value : '';
+  if (visibility === 'group' && !visibleGroup) { alert('请选择分组类型'); return; }
+
   try {
-    await apiFetch('/api/posts/visibility', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({post_id:postID,visibility:visibility}) });
-    const visLabel = {public:'公开',friends:'仅好友',self:'仅自己'}[visibility]||visibility;
-    const labelEl = document.querySelector('.detail-author-row .feed-visibility');
-    if (labelEl) labelEl.textContent = visLabel;
+    await apiFetch('/api/posts/visibility', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({post_id:postID,visibility:visibility,visible_group:visibleGroup}) });
+    // 刷新详情和列表
+    await openDetail(postID);
     refresh();
   } catch (e) { showPageError('修改可见范围失败：'+e.message); openDetail(postID); }
 }
@@ -667,7 +813,7 @@ function renderCommentItem(c) {
   if (isHidden && !Permissions.canViewHidden()) return '';
 
   let commentActions = '';
-  if (Permissions.canComment() && commentId) commentActions += '<button class="comment-reply-btn" data-action="showReplyForm" data-comment-id="'+commentId+'">回复</button>';
+  if (Permissions.canComment() && commentId && !_detailIsBlacklisted) commentActions += '<button class="comment-reply-btn" data-action="showReplyForm" data-comment-id="'+commentId+'">回复</button>';
   if (c.can_delete) {
     commentActions += ' <button class="btn-small btn-author-delete" data-action="deleteComment" data-comment-id="'+commentId+'" data-comment-author-id="'+(cm.author_id||0)+'">删除</button>';
   } else if (role()!=='admin') {
@@ -691,7 +837,7 @@ function renderCommentItem(c) {
     '<div class="comment-body">'+escHtml(commentContent)+'</div>' +
     commentActions;
 
-  if (Permissions.canComment() && commentId) {
+  if (Permissions.canComment() && commentId && !_detailIsBlacklisted) {
     html += '<div id="replyForm_'+commentId+'" style="display:none;" class="reply-form"><div class="comment-form"><input type="text" id="replyInput_'+commentId+'" placeholder="回复 '+escHtml(authorName)+'..." data-action="submitReply" data-post-id="'+postId+'" data-comment-id="'+commentId+'"><button data-action="submitReply" data-post-id="'+postId+'" data-comment-id="'+commentId+'">回复</button></div></div>';
   }
 
@@ -729,6 +875,7 @@ function renderCommentItem(c) {
 }
 
 function showReplyForm(commentID) {
+  if (_detailIsBlacklisted) { showBlacklistDenied(_detailAuthorName); return; }
   const form = document.getElementById('replyForm_'+commentID);
   if (!form) return;
   form.style.display = form.style.display==='none' ? '' : 'none';
@@ -736,6 +883,7 @@ function showReplyForm(commentID) {
 }
 
 async function submitComment(postID) {
+  if (_detailIsBlacklisted) { showBlacklistDenied(_detailAuthorName); return; }
   if (!Permissions.check('comment')) { showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权评论'); return; }
   const input = document.getElementById('newCommentInput');
   const content = input ? input.value.trim() : '';
@@ -748,6 +896,7 @@ async function submitComment(postID) {
 }
 
 async function submitReply(postID, parentID) {
+  if (_detailIsBlacklisted) { showBlacklistDenied(_detailAuthorName); return; }
   if (!Permissions.check('comment')) { showPermissionDenied('当前角色（'+ROLE_LABELS[role()]+'）无权回复'); return; }
   const input = document.getElementById('replyInput_'+parentID);
   const content = input ? input.value.trim() : '';
@@ -765,6 +914,7 @@ function closeDetail() {
   refresh();
 }
 
+// ===== 好友列表（含黑名单标记和拉黑按钮） =====
 async function loadClassmates() {
   const container = document.getElementById('classmatesList');
   if (!container) return;
@@ -781,8 +931,11 @@ async function loadClassmates() {
         const s = c.friend_status || 'none';
         const cid = u.id;
         const relId = c.relation_id || 0;
+        const isBL = !!c.is_blacklisted; // 被对方拉黑
         let statusHtml = '';
-        if (s === 'accepted') {
+        if (isBL) {
+          statusHtml = '<span class="classmate-status" style="color:#e74c3c;">被拉黑</span>';
+        } else if (s === 'accepted') {
           statusHtml = '<span class="classmate-status">好友</span>' + (canAdd ? '<button class="btn-small btn-unfriend" data-action="unfriend" data-user-id="' + cid + '">解除</button>' : '');
         } else if (s === 'pending') {
           statusHtml = '<span class="classmate-status">待确认</span>' + (canAdd ? '<button class="btn-small btn-cancel" data-action="cancelFriend" data-user-id="' + cid + '">取消</button>' : '');
@@ -791,7 +944,11 @@ async function loadClassmates() {
         } else {
           statusHtml = '<span class="classmate-status">陌生人</span>' + (canAdd ? '<button class="btn-small btn-add" data-action="addFriend" data-user-id="' + cid + '">添加</button>' : '<span class="classmate-status" style="color:#bbb;">管理员不可加好友</span>');
         }
-        return '<div class="classmate-item"><img class="classmate-avatar" src="' + safeStr(u.avatar_url) + '" alt="' + escHtml(safeStr(u.name)) + '" onerror="this.style.display=\'none\'"><div class="classmate-info"><div class="classmate-name">' + escHtml(safeStr(u.name, '未知')) + '</div></div>' + statusHtml + '</div>';
+        // 拉黑/取消拉黑按钮（学生和作者可用）
+        if (Permissions.canManageBlacklist()) {
+          statusHtml += ' <button class="btn-small btn-blacklist" data-action="toggleBlacklist" data-user-id="' + cid + '">拉黑</button>';
+        }
+        return '<div class="classmate-item'+(isBL?' classmate-bl-item':'')+'"><img class="classmate-avatar" src="' + safeStr(u.avatar_url) + '" alt="' + escHtml(safeStr(u.name)) + '" onerror="this.style.display=\'none\'"><div class="classmate-info"><div class="classmate-name">' + escHtml(safeStr(u.name, '未知')) + '</div></div>' + statusHtml + '</div>';
       } catch (e) { console.error('renderClassmate error', e); return ''; }
     }).join('');
   } catch (e) { showLoadError(container, '加载好友失败：' + e.message, retryAll); }
@@ -808,6 +965,7 @@ function handleClassmatesClick(e) {
   if (action === 'acceptFriend' && relationId) acceptFriend(relationId);
   if (action === 'rejectFriend' && relationId) rejectFriend(relationId);
   if (action === 'unfriend' && userId) unfriend(userId);
+  if (action === 'toggleBlacklist' && userId) toggleBlacklist(userId);
 }
 
 async function addFriend(toID) {
@@ -835,6 +993,98 @@ async function unfriend(friendID) {
   if (!confirm('确定解除好友关系？')) return;
   try { await apiFetch('/api/friends/unfriend', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ friend_id: friendID }) }); refresh(); }
   catch (e) { showPageError('解除好友失败：' + e.message); }
+}
+
+// ===== 黑名单 =====
+async function toggleBlacklist(targetID) {
+  if (!Permissions.canManageBlacklist()) { showPermissionDenied('当前角色无权操作黑名单'); return; }
+  try {
+    const data = await apiFetch('/api/blacklist/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_id: targetID }) });
+    if (data.blocked) {
+      showPageError('已将对方加入黑名单，好友关系已自动解除');
+    } else {
+      showPageError('已将对方移出黑名单');
+    }
+    refresh();
+  } catch (e) { showPageError('操作黑名单失败：' + e.message); }
+}
+
+// ===== 分组信息 =====
+async function loadGroups() {
+  const container = document.getElementById('groupsList');
+  if (!container) return;
+  try {
+    const groups = await apiFetch('/api/groups');
+    if (!Array.isArray(groups) || groups.length === 0) {
+      container.innerHTML = '<p style="color:#999;font-size:13px;">暂无分组</p>';
+      return;
+    }
+    container.innerHTML = groups.map(function(g) {
+      const typeLabel = g.label || g.type;
+      const count = safeNum(g.member_count);
+      return '<div class="group-item" data-action="showGroupMembers" data-group-type="'+escHtml(g.type)+'">' +
+        '<span class="group-icon">' + (g.type === 'blacklist' ? '🚫' : g.type === 'roommate' ? '🏠' : '🎓') + '</span>' +
+        '<span class="group-name">'+escHtml(typeLabel)+'</span>' +
+        '<span class="group-count">'+count+'人</span>' +
+        '</div>';
+    }).join('');
+  } catch (e) { container.innerHTML = '<p style="color:#999;font-size:13px;">加载分组失败</p>'; }
+}
+
+function handleGroupsClick(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const groupType = target.dataset.groupType;
+  if (action === 'showGroupMembers' && groupType) showGroupMembers(groupType);
+}
+
+async function showGroupMembers(groupType) {
+  try {
+    const members = await apiFetch('/api/groups/members?type=' + groupType);
+    const typeLabel = {classmate:'同班同学',roommate:'室友',blacklist:'黑名单'}[groupType] || groupType;
+    let html = '<h3>'+escHtml(typeLabel)+'</h3>';
+    if (!Array.isArray(members) || members.length === 0) {
+      html += '<p style="color:#999;font-size:13px;">暂无成员</p>';
+    } else {
+      html += '<div class="group-members-list">' + members.map(function(m) {
+        return '<div class="group-member-item"><img class="group-member-avatar" src="'+safeStr(m.avatar_url)+'" alt="" onerror="this.style.display=\'none\'"><span>'+escHtml(safeStr(m.name,'未知'))+'</span></div>';
+      }).join('') + '</div>';
+    }
+    // 弹窗展示
+    let modal = document.getElementById('groupMembersModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'groupMembersModal';
+      modal.className = 'modal-overlay';
+      modal.style.display = 'none';
+      modal.innerHTML = '<div class="modal-content" style="max-width:360px;"><button class="modal-close" onclick="document.getElementById(\'groupMembersModal\').style.display=\'none\'">&times;</button><div id="groupMembersBody"></div></div>';
+      document.body.appendChild(modal);
+      modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
+    }
+    document.getElementById('groupMembersBody').innerHTML = html;
+    modal.style.display = '';
+  } catch (e) { showPageError('加载分组成员失败：' + e.message); }
+}
+
+// ===== 权限说明面板 =====
+async function loadPermissions() {
+  const container = document.getElementById('permissionsBody');
+  if (!container) return;
+  try {
+    const perm = await apiFetch('/api/permissions');
+    if (!perm || !perm.role) { container.innerHTML = '<p style="color:#999;font-size:13px;">权限信息加载失败</p>'; return; }
+    let html = '<div class="perm-section"><div class="perm-section-title">可见范围</div><div class="perm-range">' + escHtml(perm.visible_range || '未知') + '</div></div>';
+    if (perm.allowed_actions && perm.allowed_actions.length > 0) {
+      html += '<div class="perm-section"><div class="perm-section-title">可执行操作</div><ul class="perm-list perm-allowed">' +
+        perm.allowed_actions.map(function(a) { return '<li>' + escHtml(a) + '</li>'; }).join('') + '</ul></div>';
+    }
+    if (perm.forbidden_actions && perm.forbidden_actions.length > 0) {
+      html += '<div class="perm-section"><div class="perm-section-title">不可执行操作</div><ul class="perm-list perm-forbidden">' +
+        perm.forbidden_actions.map(function(a) { return '<li>' + escHtml(a) + '</li>'; }).join('') + '</ul></div>';
+    }
+    container.innerHTML = html;
+  } catch (e) { container.innerHTML = '<p style="color:#999;font-size:13px;">权限信息加载失败</p>'; }
 }
 
 // ===== 统计 =====
